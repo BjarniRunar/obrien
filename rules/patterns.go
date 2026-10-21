@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -125,18 +126,15 @@ func (p *Patterns) Add(add []Pattern, replace string) error {
 	}
 	var added []compiled
 	for _, a := range add {
-		if !validName(a.Name) {
-			return fmt.Errorf("invalid name %q: use letters, digits, '.', '_' or '-'", a.Name)
+		c, err := compile(a)
+		if err != nil {
+			return err
 		}
 		if names[a.Name] {
 			return fmt.Errorf("a pattern named %q already exists", a.Name)
 		}
 		names[a.Name] = true
-		re, err := regexp.Compile(a.Regexp)
-		if err != nil {
-			return fmt.Errorf("pattern %q: %w", a.Name, err)
-		}
-		added = append(added, compiled{Pattern: a, re: re})
+		added = append(added, c)
 	}
 
 	if at >= 0 {
@@ -146,6 +144,52 @@ func (p *Patterns) Add(add []Pattern, replace string) error {
 	}
 	p.list.Store(&list)
 	return nil
+}
+
+// Update replaces each pattern in add that has the name of an existing one,
+// in its place, and appends the rest. Either all of add is applied or, on
+// error, none of it.
+func (p *Patterns) Update(add []Pattern) error {
+	if len(add) == 0 {
+		return errors.New("no patterns given")
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	list := slices.Clone(*p.list.Load())
+	at := make(map[string]int, len(list))
+	for i, c := range list {
+		at[c.Name] = i
+	}
+	seen := make(map[string]bool, len(add))
+	for _, a := range add {
+		c, err := compile(a)
+		if err != nil {
+			return err
+		}
+		if seen[a.Name] {
+			return fmt.Errorf("pattern %q given twice", a.Name)
+		}
+		seen[a.Name] = true
+		if i, ok := at[a.Name]; ok {
+			list[i] = c
+		} else {
+			list = append(list, c)
+		}
+	}
+	p.list.Store(&list)
+	return nil
+}
+
+func compile(a Pattern) (compiled, error) {
+	if !validName(a.Name) {
+		return compiled{}, fmt.Errorf("invalid name %q: use letters, digits, '.', '_' or '-'", a.Name)
+	}
+	re, err := regexp.Compile(a.Regexp)
+	if err != nil {
+		return compiled{}, fmt.Errorf("pattern %q: %w", a.Name, err)
+	}
+	return compiled{Pattern: a, re: re}, nil
 }
 
 // Remove deletes the named patterns. Unknown names are an error and leave

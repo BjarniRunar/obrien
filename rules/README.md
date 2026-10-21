@@ -30,7 +30,9 @@ and deciding whether it may pass. Forwarding itself lives in
   to parse, broke the sanity rules or was not captured (`SanityError`); and
   `Patterns`, an editable, named list of regular expressions matched
   against the raw header. Every pattern is tried and each match reported to
-  a `MatchFunc`. Edits are atomic and safe while traffic flows.
+  a `MatchFunc`. `Add` refuses names already in use (unless replacing one);
+  `Update` replaces same-named patterns in place and appends the rest.
+  Edits are atomic and safe while traffic flows.
 - `rules_test.go`: tests for the parser, the patterns, and capture over real
   connections (pipelining, chunked bodies, TLS with HTTP/1.1 and HTTP/2).
 

@@ -140,9 +140,10 @@ func (p *Police) GetDocs() map[string]kettlingar.MethodDesc {
 			Docs: "rules-add NAME REGEXP adds a pattern; a request whose raw header matches it\n" +
 				"is rejected. The header is matched as sent, request line and CRLFs included;\n" +
 				"use (?i) for case-insensitive and (?m) for per-line ^ and $.\n\n" +
-				"--replace OLD puts the new pattern in OLD's place. --file PATH adds the\n" +
-				"patterns in a file written by rules-list -f json; PATH is read by the\n" +
-				"daemon and must be absolute. Nothing is changed if any pattern is invalid.",
+				"--replace OLD puts the new pattern in OLD's place. --file PATH loads the\n" +
+				"patterns in a file written by rules-list -f json: ones named like an\n" +
+				"existing rule replace it in place, the rest are added. PATH is read by\n" +
+				"the daemon and must be absolute. Nothing is changed if any pattern is invalid.",
 		},
 		"rules-rm": {Help: "Remove header patterns by name: NAME..."},
 	}

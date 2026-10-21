@@ -107,7 +107,7 @@ sorted by name.
 ./police rules-rm multipart
 ./police rules-list                              # each rule with its match count
 ./police rules-list -f json > rules.json         # save
-./police rules-add --file "$PWD/rules.json"      # load (path read by the daemon)
+./police rules-add --file "$PWD/rules.json"      # load: updates same-named rules, adds the rest
 ```
 
 Use `(?i)` for case-insensitive matching and `(?m)` to make `^` and `$` match

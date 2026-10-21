@@ -101,6 +101,17 @@ func TestPatterns(t *testing.T) {
 		t.Errorf("matches = %v", matches)
 	}
 
+	if err := p.Update([]Pattern{{"evil", "/bad"}, {"new", "x"}, {"new", "y"}}); err == nil {
+		t.Error("Update with a repeated name succeeded")
+	}
+	if err := p.Update([]Pattern{{"evil", "/bad"}, {"new", "x"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.List(); len(got) != 3 || got[1] != (Pattern{"evil", "/bad"}) || got[2].Name != "new" {
+		t.Fatalf("after Update: %v", got)
+	}
+	p.Remove([]string{"new"})
+
 	if err := p.Remove([]string{"evil", "missing"}); err == nil {
 		t.Error("Remove of a missing name succeeded")
 	}

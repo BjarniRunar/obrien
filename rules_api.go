@@ -79,13 +79,17 @@ type RulesAddArgs struct {
 func (p *Police) ApiRulesAdd(ri *kettlingar.RequestInfo, args RulesAddArgs) *RulesResponse {
 	var add []rules.Pattern
 	switch {
-	case args.File != "" && len(args.Args) > 0:
-		return p.rulesResult(ri, errors.New("give either NAME REGEXP or --file, not both"))
+	case args.File != "" && (len(args.Args) > 0 || args.Replace != ""):
+		return p.rulesResult(ri, errors.New("--file takes no NAME REGEXP or --replace"))
 	case args.File != "":
-		var err error
-		if add, err = readRulesFile(args.File); err != nil {
-			return p.rulesResult(ri, err)
+		add, err := readRulesFile(args.File)
+		if err == nil {
+			err = p.patterns.Update(add)
 		}
+		if err == nil {
+			p.ks.Logger.Info(serviceName+": rules loaded", "count", len(add), "file", args.File)
+		}
+		return p.rulesResult(ri, err)
 	case len(args.Args) == 2:
 		add = []rules.Pattern{{Name: args.Args[0], Regexp: args.Args[1]}}
 	default:
