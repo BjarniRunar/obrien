@@ -1,0 +1,2 @@
+# Raw HTTP requests: keep CRLFs and binary bodies byte for byte.
+* -text -diff

@@ -1,0 +1,4 @@
+PROPFIND /dav/folder/ HTTP/1.1
+Host: example.com
+Depth: 1
+

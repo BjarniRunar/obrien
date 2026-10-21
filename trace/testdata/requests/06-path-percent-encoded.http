@@ -1,0 +1,3 @@
+GET /files/hello%20world.txt/a%2Fb HTTP/1.1
+Host: example.com
+

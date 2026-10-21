@@ -31,6 +31,9 @@ func (r *RequestsResponse) String() string {
 		fmt.Fprintf(&b, "%s %-5s %s %d %s %s%s %s %s\n",
 			rec.Time.Format(time.RFC3339Nano), rec.Listener, rec.RemoteAddr, rec.Status,
 			rec.Method, rec.Host, rec.URI, rec.Proto, rec.Duration.Round(time.Microsecond))
+		if rec.Trace != "" {
+			fmt.Fprintf(&b, "    %s\n", rec.Trace)
+		}
 	}
 	return b.String()
 }

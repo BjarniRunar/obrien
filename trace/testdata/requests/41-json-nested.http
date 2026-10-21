@@ -1,0 +1,8 @@
+PUT /api/orders/1234 HTTP/1.1
+Host: example.com
+User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0
+Accept: */*
+Content-Type: application/json
+Content-Length: 159
+
+{"order":{"id":"550e8400-e29b-41d4-a716-446655440000","items":[{"sku":"A1","qty":2},{"sku":"B22","qty":1,"note":""}],"total":12.50},"tags":["x","y"],"meta":{}}

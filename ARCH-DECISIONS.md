@@ -205,3 +205,30 @@ bodies are inspected only up to that point, so uploads are not refused.
 Only requests are inspected, never responses. Coraza's engine always runs
 in blocking mode, and obrien decides whether an interruption blocks or is
 only logged, so detect mode reports exactly what block mode would reject.
+
+## 12. Request traces, tokenized as a stream
+
+Each request in the request log carries a trace: a line of tokens giving
+its shape (path, query, selected headers, body structure) without its
+content. The syntax is in [`trace/README.md`](trace/README.md).
+
+**Why:** the aim is to map a site's expected traffic from what it receives.
+Logging traces first, and deriving patterns from them later, keeps the
+analysis out of the request path and lets it change without changing what
+is collected. The syntax is designed to be turned into readable regular
+expressions.
+
+**How:** the body is tokenized while the proxy streams it to the upstream,
+through a wrapper on `Request.Body`, so bodies are never buffered and there
+is no size limit. The rest of the trace comes from the raw header the rules
+judged (#7), which `rules.Filter` hands back to the monitor middleware
+through a slot in the request context. A body that is never read, such as
+a rejected request's, is not traced. Traces are only built when the
+request log is on.
+
+Only requests answered with a 2xx or 3xx status get a trace. The goal is a
+map of legitimate requests, and a 404, a 503 or a request the rules blocked
+says nothing about what the site serves. Redirects are kept because normal
+use produces them (a form POST answered with 302, a revalidated page with
+304). The request log still lists every request; the others just have no
+trace.

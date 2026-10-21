@@ -22,6 +22,7 @@ type Record struct {
 	Proto      string        `msgpack:"proto" json:"proto"`
 	Status     int           `msgpack:"status" json:"status"`
 	Duration   time.Duration `msgpack:"duration" json:"duration"`
+	Trace      string        `msgpack:"trace" json:"trace,omitempty"`
 }
 
 // Hook receives a Record for each completed request. Hooks run on the
@@ -40,11 +41,21 @@ func (f HookFunc) Observe(rec *Record) { f(rec) }
 // took to run.
 type TimeFunc func(listener string, d time.Duration)
 
+// Annotator is called before each request is handled, and may return a
+// replacement request (e.g. with a new context or body) for next. The
+// function it returns, if not nil, is called after the response to add to
+// the Record, before the hooks see it.
+type Annotator func(r *http.Request) (*http.Request, func(rec *Record))
+
 // Middleware wraps next, building a Record for every request it handles and
-// passing it to each hook in order.
-func Middleware(listener string, hooks []Hook, onTime TimeFunc, next http.Handler) http.Handler {
+// passing it to each hook in order. annotate may be nil.
+func Middleware(listener string, hooks []Hook, annotate Annotator, onTime TimeFunc, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		var finish func(rec *Record)
+		if annotate != nil {
+			r, finish = annotate(r)
+		}
 		sw := proxy.NewStatusWriter(w)
 		next.ServeHTTP(sw, r)
 		rec := &Record{
@@ -59,6 +70,9 @@ func Middleware(listener string, hooks []Hook, onTime TimeFunc, next http.Handle
 			Duration:   time.Since(start),
 		}
 		hookStart := time.Now()
+		if finish != nil {
+			finish(rec)
+		}
 		for _, h := range hooks {
 			h.Observe(rec)
 		}

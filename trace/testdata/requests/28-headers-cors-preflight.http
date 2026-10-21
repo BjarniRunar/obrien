@@ -1,0 +1,8 @@
+OPTIONS /api/items HTTP/1.1
+Host: example.com
+User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0
+Accept: */*
+Origin: https://app.example.org
+Access-Control-Request-Method: PUT
+Access-Control-Request-Headers: content-type, x-csrf-token
+

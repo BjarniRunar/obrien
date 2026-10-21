@@ -1,0 +1,7 @@
+POST /api/x HTTP/1.1
+Host: example.com
+User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0
+Accept: */*
+Content-Type: application/json
+Content-Length: 0
+

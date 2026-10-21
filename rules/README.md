@@ -23,7 +23,9 @@ and deciding whether it may pass. Forwarding itself lives in
   stops, so if the upgrade is refused the connection's later requests are
   rejected.
 - `header.go`: `Header` (raw bytes, request line, fields in wire order, parse
-  error), the strict HTTP/1.x parser, and `checkHeader`, the sanity rules:
+  error), `HeaderSlot` (`WithHeaderSlot`), through which `Filter` hands the
+  header it judged to code wrapping it, `ParseHeader` (the parser, for
+  tests elsewhere), the strict HTTP/1.x parser, and `checkHeader`, the sanity rules:
   CRLF line endings, no line folding, valid method, target, protocol, field
   names and values; at most one `Content-Length`, `Transfer-Encoding`,
   `Content-Type` and `Host`, each of which must parse; no `Content-Length`

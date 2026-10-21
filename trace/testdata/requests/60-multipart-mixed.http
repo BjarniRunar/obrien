@@ -1,0 +1,13 @@
+POST /batch HTTP/1.1
+Host: example.com
+User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0
+Accept: */*
+Content-Type: multipart/mixed; boundary=b1
+Content-Length: 67
+
+--b1
+Content-Type: application/http
+
+GET /a HTTP/1.1
+
+--b1--

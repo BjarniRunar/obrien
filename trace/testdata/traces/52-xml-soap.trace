@@ -1,0 +1,1 @@
+POST A1 HC1 MIME application_soap_xml HOST example_com HEADERS content_type P2 P1 BODY XML soap_envelope xmlns_soap P3 AE soap_body NA getprice NA item NA A1 TE TE TE TE CLOK

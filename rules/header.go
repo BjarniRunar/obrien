@@ -43,12 +43,33 @@ func withHeader(ctx context.Context, h *Header) context.Context {
 	return context.WithValue(ctx, headerKey{}, h)
 }
 
+// HeaderSlot receives the header Filter judged a request on, for code that
+// wraps Filter and so cannot see the context Filter attaches it to.
+type HeaderSlot struct{ h *Header }
+
+type slotKey struct{}
+
+// WithHeaderSlot returns a context carrying a new slot, for the request
+// passed to Filter.
+func WithHeaderSlot(ctx context.Context) (context.Context, *HeaderSlot) {
+	s := &HeaderSlot{}
+	return context.WithValue(ctx, slotKey{}, s), s
+}
+
+// Header returns the header Filter put in the slot, or nil if the request
+// did not reach Filter. It must not be called before Filter returns.
+func (s *HeaderSlot) Header() *Header { return s.h }
+
 // HeaderFrom returns the header Filter attached to the request's context, or
 // nil outside Filter.
 func HeaderFrom(ctx context.Context) *Header {
 	h, _ := ctx.Value(headerKey{}).(*Header)
 	return h
 }
+
+// ParseHeader parses an HTTP/1.x header block as Listen does, with the
+// sanity rules applied. raw must end with the empty line ending the block.
+func ParseHeader(raw []byte) *Header { return parseHeader(raw) }
 
 // parseHeader strictly parses an HTTP/1.x header block. raw must end with
 // the terminating empty line. Every line must end in CRLF.

@@ -13,7 +13,9 @@ it exists to see and control that traffic, not to spread it across servers.
   listener), re-encrypting TLS traffic, keeping the client's `Host`
   header and setting `X-Forwarded-For`, `-Host` and `-Proto`.
 - Every request passes through monitoring hooks: metrics, and a bounded
-  in-memory log of recent requests (`obrien requests`).
+  in-memory log of recent requests (`obrien requests`). Requests answered
+  with 2xx or 3xx also get a trace of their shape (path, query, selected
+  headers, body structure) without their content.
 
 - Every request header must pass a strict sanity check (well-formed request
   line and fields, no ambiguous framing headers) or is rejected.
@@ -33,10 +35,14 @@ it exists to see and control that traffic, not to spread it across servers.
   443 to the daemon's listeners with nftables.
 - [`proxy/`](proxy/README.md): forwarding requests to the upstream.
 - `requests.go`: the `requests` RPC method, which shows the request log.
+- `annotator_test.go`: tests that only requests answered with 2xx or 3xx
+  get a trace in the request log.
 - `rules_api.go`: the `rules-*` RPC methods, which edit the header patterns.
 - [`monitor/`](monitor/README.md): observing requests through hooks, and the
   bounded in-memory request log.
 - [`rules/`](rules/README.md): inspecting and filtering requests.
+- [`trace/`](trace/README.md): request traces, the shape of each request
+  without its content, shown in the request log.
 - [`ARCH-DECISIONS.md`](ARCH-DECISIONS.md): high-level design decisions.
 
 ## Build

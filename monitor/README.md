@@ -11,6 +11,11 @@ Deciding whether a request may pass lives in [`../rules`](../rules/README.md).
   the rules filter, so rejected requests are observed too, with the
   `--blocked-status` status.
   A `TimeFunc` callback gets the time the hooks took for each request.
+  An optional `Annotator` runs before each request, may replace it (e.g.
+  with a new context or body), and can add to the `Record` after the
+  response, before the hooks run; its time counts as hook time. The
+  daemon uses it to fill `Record.Trace` (see [`../trace`](../trace/README.md))
+  when the request log is on, for requests answered with 2xx or 3xx.
 - `log.go`: `Log`, a hook keeping the newest N records in a fixed-size ring
   buffer; `Recent(n)` returns them oldest first.
 - `log_test.go`: tests for `Log`.

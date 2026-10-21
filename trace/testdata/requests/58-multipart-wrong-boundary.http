@@ -1,0 +1,19 @@
+POST /upload HTTP/1.1
+Host: example.com
+User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0
+Accept: */*
+Content-Type: multipart/form-data; boundary=abc
+Content-Length: 265
+
+--xyz
+Content-Disposition: form-data; name="meta"
+Content-Type: application/json
+Content-Transfer-Encoding: 8bit
+X-Custom-Part-Header: vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
+
+{"a":1}
+--xyz
+Content-Type: text/plain
+
+no name
+--xyz--

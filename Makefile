@@ -37,7 +37,7 @@ test:
 
 # Format our own sources only; leave the submodule alone.
 fmt:
-	gofmt -w *.go proxy rules monitor
+	gofmt -w *.go proxy rules monitor trace
 
 clean:
 	rm -f $(BINARY)

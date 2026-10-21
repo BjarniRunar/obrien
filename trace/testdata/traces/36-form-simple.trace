@@ -1,0 +1,1 @@
+POST A1 HC1 MIME application_x_www_form_urlencoded HOST example_com HEADERS content_type P3 BODY FORM pass P1 remember A1 user A1 CLOK

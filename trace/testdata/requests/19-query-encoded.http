@@ -1,0 +1,3 @@
+GET /s?q=caf%C3%A9&s=a+b&k%20ey=1&n=%00 HTTP/1.1
+Host: example.com
+

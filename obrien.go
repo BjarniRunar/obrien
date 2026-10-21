@@ -20,6 +20,7 @@ import (
 	"obrien/monitor"
 	"obrien/proxy"
 	"obrien/rules"
+	"obrien/trace"
 )
 
 // off disables a listener or file setting. kettlingar only exposes settings
@@ -136,7 +137,7 @@ func (p *Obrien) ServiceStartup(ks *kettlingar.KettlingarService) error {
 			return fmt.Errorf("listen http: %w", err)
 		}
 		p.httpLn = ln
-		srv := proxy.NewServer(monitor.Middleware("http", p.hooks, p.hooksTimed, p.pipeline(target)))
+		srv := proxy.NewServer(monitor.Middleware("http", p.hooks, p.annotator(), p.hooksTimed, p.pipeline(target)))
 		p.serve("http", srv, ln, nil)
 	}
 	if https != off {
@@ -149,7 +150,7 @@ func (p *Obrien) ServiceStartup(ks *kettlingar.KettlingarService) error {
 			return fmt.Errorf("listen https: %w", err)
 		}
 		p.httpsLn = ln
-		srv := proxy.NewServer(monitor.Middleware("https", p.hooks, p.hooksTimed, p.pipeline(targetHttps)))
+		srv := proxy.NewServer(monitor.Middleware("https", p.hooks, p.annotator(), p.hooksTimed, p.pipeline(targetHttps)))
 		srv.TLSConfig = &tls.Config{
 			MinVersion:   tls.VersionTLS12,
 			NextProtos:   []string{"h2", "http/1.1"},
@@ -241,6 +242,30 @@ func (p *Obrien) ServiceShutdown(ks *kettlingar.KettlingarService) error {
 		_ = p.crs.Close()
 	}
 	return nil
+}
+
+// annotator traces each request for the request log; without a log there
+// is nothing to trace for. Only requests answered with 2xx or 3xx are
+// traced: traces map the site's legitimate traffic, so errors, and requests
+// the rules blocked (--blocked-status is always 4xx or 5xx), are left out.
+func (p *Obrien) annotator() monitor.Annotator {
+	if p.log == nil {
+		return nil
+	}
+	return func(r *http.Request) (*http.Request, func(*monitor.Record)) {
+		ctx, slot := rules.WithHeaderSlot(r.Context())
+		r = r.WithContext(ctx)
+		var body *trace.Body
+		if r.Body != nil && r.Body != http.NoBody {
+			body = trace.NewBody(r.Body, r.Header.Get("Content-Type"))
+			r.Body = body
+		}
+		return r, func(rec *monitor.Record) {
+			if rec.Status >= 200 && rec.Status < 400 {
+				rec.Trace = trace.Of(slot.Header(), body)
+			}
+		}
+	}
 }
 
 func (p *Obrien) startCRS() error {

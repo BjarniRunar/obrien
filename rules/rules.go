@@ -47,6 +47,9 @@ func Filter(rules []Rule, status int, infoURL string, onReject RejectFunc, onTim
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		h, tlsState := takeHeader(r)
+		if s, ok := r.Context().Value(slotKey{}).(*HeaderSlot); ok {
+			s.h = h
+		}
 		r = r.WithContext(withHeader(r.Context(), h))
 		if r.TLS == nil {
 			r.TLS = tlsState
