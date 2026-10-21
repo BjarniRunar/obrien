@@ -4,3 +4,6 @@
 [submodule "submodules/kettlingar-go"]
 	path = submodules/kettlingar-go
 	url = https://github.com/mailpile/kettlingar-go
+[submodule "submodules/coraza"]
+	path = submodules/coraza
+	url = https://github.com/corazawaf/coraza

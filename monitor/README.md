@@ -8,7 +8,8 @@ Deciding whether a request may pass lives in [`../rules`](../rules/README.md).
   protocol, status, duration), the `Hook` interface and `HookFunc` adapter,
   and `Middleware`. Hooks run synchronously on the request's goroutine, in
   order, so they must be fast and safe for concurrent use. Middleware wraps
-  the rules filter, so rejected requests are observed too (status 403).
+  the rules filter, so rejected requests are observed too, with the
+  `--blocked-status` status.
   A `TimeFunc` callback gets the time the hooks took for each request.
 - `log.go`: `Log`, a hook keeping the newest N records in a fixed-size ring
   buffer; `Recent(n)` returns them oldest first.

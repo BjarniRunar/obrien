@@ -32,15 +32,38 @@ and deciding whether it may pass. Forwarding itself lives in
   to parse, broke the sanity rules or was not captured (`SanityError`); and
   `Patterns`, an editable, named list of regular expressions matched
   against the raw header, each with an optional explanation `URL` (checked
-  by `ValidURL`: http(s) or an absolute path). Every pattern is tried and each match reported to
-  a `MatchFunc`. `Add` refuses names already in use (unless replacing one);
-  A rejection carries the URL of the first matching pattern that has one.
-  `Update` replaces same-named patterns in place and appends the rest.
-  Edits are atomic and safe while traffic flows.
+  by `ValidURL`: http(s) or an absolute path). Every pattern is tried and
+  each match reported to a `MatchFunc`. A rejection carries the URL of the
+  first matching pattern that has one. `Add` refuses names already in use
+  (unless replacing one); `Update` replaces same-named patterns in place
+  and appends the rest. Edits are atomic and safe while traffic flows.
+- `crs.go`: `CRS`, a rule running the OWASP Core Rule Set with
+  [Coraza](../submodules/coraza), built from the local submodule. Unlike
+  the other rules it judges the request as net/http parsed it, including
+  up to `BodyLimit` (default 1 MiB) of the body, which it reads and puts
+  back in `Request.Body`.
+  In block mode an interruption, or a failure to read the body, is a
+  `Rejection` wrapping a `CRSError`; in detect mode an interruption goes to
+  an `OnDetect` callback and the request passes. Logged CRS rules that
+  matched are reported to a `MatchFunc` as `crs-<id>`, and the time each
+  check took to a `TimeFunc`. Errors go to a `CRSErrorFunc` with a type
+  (the `CRSErr*` constants): failures reading the body or in Coraza, a
+  body inspected only in part because it was over the limit (which does
+  not reject it), and the malformed-request rules in `crs.conf`.
+- `crs.conf`: the engine settings `CRS` loads before the CRS setup (based on
+  Coraza's `coraza.conf-recommended`): body limits, body processors, and no
+  response inspection or audit log.
+- `crs_test.go`: tests for `CRS` (attacks in query and body, clean
+  requests, the body passed on intact, detect mode, error types).
 - `rules_test.go`: tests for the parser, the patterns, the block page, and capture over real
   connections (pipelining, chunked bodies, TLS with HTTP/1.1 and HTTP/2).
 
 The daemon runs `Sanity` then its `Patterns`, edited by the `rules-list`,
-`rules-add` and `rules-rm` commands, and counts rejections
-(`rules_rejected_total`), sanity failures (`rules_invalid_total`) and
-pattern matches (`rules_matched_total`, by rule).
+`rules-add` and `rules-rm` commands, then `CRS` if `--crs` is on. It counts
+rejections (`rules_rejected_total`), sanity failures
+(`rules_invalid_total`), pattern and CRS rule matches
+(`rules_matched_total`, by rule), CRS rejections
+(`rules_crs_rejected_total`), CRS errors by type
+(`rules_crs_errors_total{type=…}`), the time spent in the CRS
+(`rules_crs_check_time_us`) and, in detect mode, requests the CRS would
+have rejected (`rules_detected_total`).

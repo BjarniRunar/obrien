@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/mailpile/kettlingar-go/kettlingar"
@@ -38,6 +40,10 @@ type Obrien struct {
 	BlockedStatus int    `default:"502" help:"HTTP status for requests blocked by rules (400-599)"`
 	BlockedUrl    string `default:"off" help:"Page linked from block responses explaining blocks, unless the rule sets its own, or off"`
 
+	Crs         string `default:"off" help:"OWASP Core Rule Set: block, detect (log only) or off"`
+	CrsParanoia int    `default:"1"   help:"CRS paranoia level, 1-4"`
+	CrsConf     string `default:"off" help:"Absolute path of extra CRS directives (tuning, exclusions), or off"`
+
 	TrustedProxies string `default:"off" help:"Comma-separated IPs/CIDRs whose X-Forwarded-For is kept, or off"`
 
 	RequestLog int `default:"1000" help:"Recent requests kept in memory, or 0"`
@@ -51,6 +57,7 @@ type Obrien struct {
 	httpLn        net.Listener
 	httpsLn       net.Listener
 	patterns      *rules.Patterns
+	crs           *rules.CRS
 	trusted       []netip.Prefix
 }
 
@@ -102,6 +109,10 @@ func (p *Obrien) ServiceStartup(ks *kettlingar.KettlingarService) error {
 	ks.MetricsHelp("rules_checked_total", "Requests checked against rules", kettlingar.PublicMetric)
 	ks.MetricsHelp("rules_invalid_total", "Requests rejected by the header sanity check", kettlingar.PublicMetric)
 	ks.MetricsHelp("rules_matched_total", "Requests whose header matched a pattern, by rule", kettlingar.PublicMetric)
+	ks.MetricsHelp("rules_detected_total", "Requests the CRS would have rejected, with --crs detect", kettlingar.PublicMetric)
+	ks.MetricsHelp("rules_crs_rejected_total", "Requests rejected by the CRS", kettlingar.PublicMetric)
+	ks.MetricsHelp("rules_crs_errors_total", "Errors met while running the CRS, by type", kettlingar.PublicMetric)
+	ks.MetricsHelp("rules_crs_check_time_us", "Time spent running the CRS per request, including reading the body, in microseconds", kettlingar.PublicMetric)
 	ks.MetricsHelp("rules_check_time_us", "Time spent running rules per request, in microseconds", kettlingar.PublicMetric)
 	ks.MetricsHelp("monitor_hooks_total", "Requests whose Record was passed to the monitor hooks, by listener", kettlingar.PublicMetric)
 	ks.MetricsHelp("monitor_hook_time_us", "Time spent running monitor hooks per request, in microseconds", kettlingar.PublicMetric)
@@ -113,6 +124,9 @@ func (p *Obrien) ServiceStartup(ks *kettlingar.KettlingarService) error {
 	}
 
 	p.patterns = rules.NewPatterns(p.patternMatched)
+	if err := p.startCRS(); err != nil {
+		return err
+	}
 	p.upstream = target
 	p.upstreamHttps = targetHttps
 
@@ -184,7 +198,11 @@ func (p *Obrien) pipeline(target *url.URL) http.Handler {
 	if infoURL == off {
 		infoURL = ""
 	}
-	return rules.Filter([]rules.Rule{rules.Sanity{}, p.patterns}, p.BlockedStatus, infoURL, p.rejected, p.rulesTimed, proxy.New(target, p.trusted, p.upstreamError))
+	list := []rules.Rule{rules.Sanity{}, p.patterns}
+	if p.crs != nil {
+		list = append(list, p.crs)
+	}
+	return rules.Filter(list, p.BlockedStatus, infoURL, p.rejected, p.rulesTimed, proxy.New(target, p.trusted, p.upstreamError))
 }
 
 func parseUpstream(raw string) (*url.URL, error) {
@@ -219,7 +237,58 @@ func (p *Obrien) ServiceShutdown(ks *kettlingar.KettlingarService) error {
 	for _, srv := range p.servers {
 		_ = srv.Shutdown(ctx)
 	}
+	if p.crs != nil {
+		_ = p.crs.Close()
+	}
 	return nil
+}
+
+func (p *Obrien) startCRS() error {
+	if p.Crs == off {
+		return nil
+	}
+	if p.Crs != "block" && p.Crs != "detect" {
+		return fmt.Errorf("--crs %q: use block, detect or off", p.Crs)
+	}
+	cfg := rules.CRSConfig{
+		Block:    p.Crs == "block",
+		Paranoia: p.CrsParanoia,
+		OnMatch:  p.patternMatched,
+		OnDetect: p.crsDetected,
+		OnTime:   p.crsTimed,
+		OnError:  p.crsError,
+	}
+	if p.CrsConf != off {
+		// The daemon's working directory is not the caller's.
+		if !filepath.IsAbs(p.CrsConf) {
+			return fmt.Errorf("--crs-conf %q must be an absolute path", p.CrsConf)
+		}
+		data, err := os.ReadFile(p.CrsConf)
+		if err != nil {
+			return fmt.Errorf("--crs-conf: %w", err)
+		}
+		cfg.Directives = string(data)
+	}
+	crs, err := rules.NewCRS(cfg)
+	if err != nil {
+		return fmt.Errorf("--crs: %w", err)
+	}
+	p.crs = crs
+	return nil
+}
+
+func (p *Obrien) crsDetected(r *http.Request, err error) {
+	p.ks.Logger.Info(serviceName+": request would be rejected", "method", r.Method, "url", r.URL.String(), "reason", err)
+	p.ks.MetricsCount("rules_detected_total", 1, kettlingar.PublicMetric, nil)
+}
+
+func (p *Obrien) crsError(r *http.Request, kind string, err error) {
+	p.ks.Logger.Info(serviceName+": crs error", "type", kind, "method", r.Method, "url", r.URL.String(), "err", err)
+	p.ks.MetricsCount("rules_crs_errors_total", 1, kettlingar.PublicMetric, kettlingar.MetricLabels{"type": kind})
+}
+
+func (p *Obrien) crsTimed(_ *http.Request, d time.Duration) {
+	p.ks.MetricsSample("rules_crs_check_time_us", uint64(d.Microseconds()), kettlingar.PublicMetric, nil)
 }
 
 func (p *Obrien) upstreamError(r *http.Request, err error) {
@@ -232,6 +301,9 @@ func (p *Obrien) rejected(r *http.Request, err error) {
 	p.ks.MetricsCount("rules_rejected_total", 1, kettlingar.PublicMetric, nil)
 	if errors.As(err, new(rules.SanityError)) {
 		p.ks.MetricsCount("rules_invalid_total", 1, kettlingar.PublicMetric, nil)
+	}
+	if errors.As(err, new(rules.CRSError)) {
+		p.ks.MetricsCount("rules_crs_rejected_total", 1, kettlingar.PublicMetric, nil)
 	}
 }
 

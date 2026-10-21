@@ -181,3 +181,27 @@ operator knows which peers are proxies.
 **How:** only the directly connecting peer is checked; the chain it sends is
 passed on as given. Only `X-Forwarded-For` is kept: `X-Forwarded-Host` and
 `-Proto` always describe obrien's own listener.
+
+## 11. OWASP Core Rule Set through Coraza
+
+`--crs block` (or `detect`) adds a rule that runs the OWASP Core Rule Set
+with [Coraza](https://github.com/corazawaf/coraza), after the sanity check
+and the header patterns.
+
+**Why:** the CRS is a broad, maintained set of generic attack signatures
+(SQL injection, XSS, path traversal, scanners, …) that obrien's own
+patterns could never match in coverage. Coraza is a pure-Go engine for it,
+so the binary stays static (#8).
+
+**How:** Coraza is a git submodule built through a `replace` directive, like
+kettlingar (#1), so it can be patched locally. The rule set is compiled
+into the binary from the `coraza-coreruleset` module, so there are no rule
+files to install. This is an exception to #7: the CRS judges the request
+as net/http parsed it, because its rules are written against parsed
+variables, but it only runs on requests that have already passed the raw
+header sanity check. The CRS reads up to 1 MiB of the request body, which
+is buffered in memory and handed on to the upstream unchanged; larger
+bodies are inspected only up to that point, so uploads are not refused.
+Only requests are inspected, never responses. Coraza's engine always runs
+in blocking mode, and obrien decides whether an interruption blocks or is
+only logged, so detect mode reports exactly what block mode would reject.

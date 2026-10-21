@@ -20,6 +20,10 @@ it exists to see and control that traffic, not to spread it across servers.
 - Requests whose raw header matches any of a list of named regular
   expressions are rejected. The list lives in memory and is edited with
   `obrien rules-add`, `rules-rm` and `rules-list`.
+- Optionally, requests (including up to 1 MiB of their body) are checked
+  against the [OWASP Core Rule Set](https://coreruleset.org/) using
+  [Coraza](https://coraza.io/), either blocking or only logging what would
+  be blocked (`--crs block` or `--crs detect`).
 
 ## Layout
 
@@ -41,7 +45,9 @@ The daemon scaffolding (start/stop, config, metrics, logging, the CLI) comes
 from [kettlingar-go](https://github.com/mailpile/kettlingar-go), checked out as
 a git submodule in `submodules/kettlingar-go`. A `replace` directive in `go.mod`
 points the build at that checkout, so local changes to kettlingar take effect
-on the next build.
+on the next build. [Coraza](https://github.com/corazawaf/coraza) is checked
+out and built the same way, from `submodules/coraza`; the OWASP Core Rule Set
+it runs comes embedded in the `coraza-coreruleset` Go module.
 
 ```sh
 git submodule update --init   # fresh clone only
@@ -52,7 +58,7 @@ The binary is statically linked (cgo is disabled), so it can be copied to
 other Linux machines of the same architecture, however old their libc.
 Cross-compile with e.g. `make GOARCH=arm64`.
 
-Requires Go 1.25.7+ (fetched automatically when `GOTOOLCHAIN=auto`).
+Requires Go 1.26+ (fetched automatically when `GOTOOLCHAIN=auto`).
 
 ## Usage
 
@@ -84,6 +90,9 @@ daemon is up to see every command it offers.
 | `--cert`     | `off`                   | TLS certificate (PEM)                |
 | `--key`      | `off`                   | TLS private key (PEM)                |
 | `--request-log` | `1000`               | Recent requests kept in memory, or `0` to disable |
+| `--crs`      | `off`                   | OWASP Core Rule Set: `block`, `detect` (log only) or `off` |
+| `--crs-paranoia` | `1`                 | CRS paranoia level, 1-4 |
+| `--crs-conf` | `off`                   | Absolute path of extra CRS directives (tuning, exclusions) |
 | `--trusted-proxies` | `off`            | Comma-separated IPs/CIDRs whose `X-Forwarded-For` is kept and appended to |
 | `--blocked-status` | `502`             | HTTP status for blocked requests (400-599) |
 | `--blocked-url` | `off`                | Page linked from block responses to explain the block, unless the rule sets its own |
