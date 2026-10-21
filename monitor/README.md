@@ -9,6 +9,7 @@ Deciding whether a request may pass lives in [`../rules`](../rules/README.md).
   and `Middleware`. Hooks run synchronously on the request's goroutine, in
   order, so they must be fast and safe for concurrent use. Middleware wraps
   the rules filter, so rejected requests are observed too (status 403).
+  A `TimeFunc` callback gets the time the hooks took for each request.
 - `log.go`: `Log`, a hook keeping the newest N records in a fixed-size ring
   buffer; `Recent(n)` returns them oldest first.
 - `log_test.go`: tests for `Log`.
@@ -19,4 +20,5 @@ produces no Record.
 
 The daemon installs two hooks: its metrics (`proxy_requests_total`,
 `proxy_request_time_us`) and, unless `--request-log 0`, a `Log` that the
-`police requests` command reads.
+`police requests` command reads. The hooks' own cost is recorded as
+`monitor_hooks_total` and `monitor_hook_time_us`, by listener.

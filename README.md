@@ -15,8 +15,11 @@ it exists to see and control that traffic, not to spread it across servers.
 - Every request passes through monitoring hooks: metrics, and a bounded
   in-memory log of recent requests (`police requests`).
 
-Request inspection and filtering rules are not implemented yet; this is the
-bare-bones proxy they will be built on.
+- Every request header must pass a strict sanity check (well-formed request
+  line and fields, no ambiguous framing headers) or is rejected.
+- Requests whose raw header matches any of a list of named regular
+  expressions are rejected. The list lives in memory and is edited with
+  `police rules-add`, `rules-rm` and `rules-list`.
 
 ## Layout
 
@@ -26,6 +29,7 @@ bare-bones proxy they will be built on.
   443 to the daemon's listeners with nftables.
 - [`proxy/`](proxy/README.md): forwarding requests to the upstream.
 - `requests.go`: the `requests` RPC method, which shows the request log.
+- `rules_api.go`: the `rules-*` RPC methods, which edit the header patterns.
 - [`monitor/`](monitor/README.md): observing requests through hooks, and the
   bounded in-memory request log.
 - [`rules/`](rules/README.md): inspecting and filtering requests.
@@ -52,8 +56,9 @@ Requires Go 1.25.7+ (fetched automatically when `GOTOOLCHAIN=auto`).
 ./police start                                   # cleartext on :8000 -> 127.0.0.1:80
 ./police start --upstream http://10.0.0.5:80 --http :80 \
                --https :443 --cert cert.pem --key key.pem
-./police metrics                                 # OpenMetrics, incl. proxy_* counters
+./police metrics                                 # OpenMetrics: proxy_*, rules_*, monitor_*
 ./police requests --count 20                     # most recent proxied requests
+./police rules-list                              # header patterns, see below
 ./police stop
 ```
 
@@ -65,7 +70,7 @@ daemon is up to see every command it offers.
 | Setting      | Default                 | Description                          |
 |--------------|-------------------------|--------------------------------------|
 | `--upstream` | `http://127.0.0.1:80`   | Where the cleartext listener forwards |
-| `--upstream-https` | `https://127.0.0.1:443` | Where the TLS listener forwards |
+| `--upstream-https` | `https://127.0.0.1:443` | Where the TLS listener forwards; an `http://` URL forwards cleartext |
 | `--http`     | `:8000`                 | Cleartext listen address, or `off`   |
 | `--https`    | `off`                   | TLS listen address, or `off`         |
 | `--cert`     | `off`                   | TLS certificate (PEM)                |
@@ -75,6 +80,33 @@ daemon is up to see every command it offers.
 Each setting can also come from a `POLICE_<NAME>` environment variable (for
 example `POLICE_UPSTREAM`), or from `police.yaml` in the user config directory
 (`~/.config/kettlingar/` on Linux).
+
+### Filtering requests
+
+Every request's header is checked before it is proxied. A header that does
+not parse strictly, or has ambiguous framing (e.g. duplicate
+`Content-Length`, or both `Content-Length` and `Transfer-Encoding`), is
+rejected with 403 and counted in `rules_invalid_total`.
+
+Then the raw header, exactly as sent (request line, fields, CRLFs), is
+matched against named regular expressions ([Go syntax](https://pkg.go.dev/regexp/syntax));
+any match rejects the request, and `rules_matched_total{rule="NAME"}`
+counts how often each one matched. HTTP/2 headers have no raw form, so they
+are matched as HTTP/1-style text rebuilt from the request, with fields
+sorted by name.
+
+```sh
+./police rules-add multipart '(?im)^content-type:\s*multipart/'
+./police rules-add --replace multipart multipart '(?im)^content-type:\s*multipart/form-data'
+./police rules-rm multipart
+./police rules-list -f json > rules.json         # save
+./police rules-add --file "$PWD/rules.json"      # load (path read by the daemon)
+```
+
+Use `(?i)` for case-insensitive matching and `(?m)` to make `^` and `$` match
+at each line; lines end in `\r\n`, so `$` alone sees the `\r`. The patterns
+live only in the daemon's memory and are lost when it stops. `rules-add
+--file` must be given an absolute path, since the daemon reads it.
 
 ### Sitting in front of a web server on ports 80 and 443
 
@@ -106,7 +138,7 @@ loopback-only listener (e.g. `127.0.0.1:8000`) is refused because it cannot
 receive that traffic. With `--local true`, connections made on the police
 host to its own addresses are redirected too, to loopback. In that mode:
 
-- If a listener's upstream is on the port it redirects (the default),
+- If either listener's upstream is on a redirected port (the default),
   connections from the daemon's own user to that port are exempt, so police
   can reach the web server without looping back into itself. This exempts
   every process running as that user, so test from a different user;
@@ -131,3 +163,11 @@ connection using the name the client asked for (its SNI, else its `Host`) and
 verifies the upstream's certificate against that name, not against the
 upstream's address. A client that connects by IP address, or asks for a name
 the upstream's certificate doesn't cover, gets `502`.
+
+Re-encrypting costs a second TLS handshake and encryption on every
+connection. To save that CPU when the hop to the upstream is trusted, give
+`--upstream-https` an `http://` URL, e.g. `--upstream-https
+http://127.0.0.1:80`. Requests from the TLS listener are then forwarded in
+cleartext, with `X-Forwarded-Proto: https` so the upstream knows the client
+used TLS. The upstream must not redirect those requests to HTTPS, or they
+loop.

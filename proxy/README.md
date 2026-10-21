@@ -15,5 +15,6 @@ live in [`../rules`](../rules/README.md).
 - `statuswriter.go`: `StatusWriter` records the response status for
   monitoring, without hiding `Flush` from the proxy.
 
-TLS termination and listener setup are done by the daemon in `../police.go`,
-which passes ready-made listeners to the servers built here.
+Listener setup is done by the daemon in `../police.go`, and TLS is
+terminated by `rules.Listen`, which captures raw headers for inspection; the
+servers built here are handed those listeners.

@@ -42,6 +42,7 @@ type Police struct {
 	log           *monitor.Log
 	httpLn        net.Listener
 	httpsLn       net.Listener
+	patterns      *rules.Patterns
 }
 
 // ServiceStartup runs in the daemon before kettlingar signals readiness, so
@@ -67,6 +68,12 @@ func (p *Police) ServiceStartup(ks *kettlingar.KettlingarService) error {
 	ks.MetricsHelp("proxy_request_time_us", "Proxied request time in microseconds", kettlingar.PublicMetric)
 	ks.MetricsHelp("proxy_upstream_errors_total", "Requests that failed to reach the upstream", kettlingar.PublicMetric)
 	ks.MetricsHelp("rules_rejected_total", "Requests rejected by rules", kettlingar.PublicMetric)
+	ks.MetricsHelp("rules_checked_total", "Requests checked against rules", kettlingar.PublicMetric)
+	ks.MetricsHelp("rules_invalid_total", "Requests rejected by the header sanity check", kettlingar.PublicMetric)
+	ks.MetricsHelp("rules_matched_total", "Requests whose header matched a pattern, by rule", kettlingar.PublicMetric)
+	ks.MetricsHelp("rules_check_time_us", "Time spent running rules per request, in microseconds", kettlingar.PublicMetric)
+	ks.MetricsHelp("monitor_hooks_total", "Requests whose Record was passed to the monitor hooks, by listener", kettlingar.PublicMetric)
+	ks.MetricsHelp("monitor_hook_time_us", "Time spent running monitor hooks per request, in microseconds", kettlingar.PublicMetric)
 
 	p.hooks = []monitor.Hook{monitor.HookFunc(p.recordMetrics)}
 	if p.RequestLog > 0 {
@@ -74,6 +81,7 @@ func (p *Police) ServiceStartup(ks *kettlingar.KettlingarService) error {
 		p.hooks = append(p.hooks, p.log)
 	}
 
+	p.patterns = rules.NewPatterns(p.patternMatched)
 	p.upstream = target
 	p.upstreamHttps = targetHttps
 
@@ -83,7 +91,8 @@ func (p *Police) ServiceStartup(ks *kettlingar.KettlingarService) error {
 			return fmt.Errorf("listen http: %w", err)
 		}
 		p.httpLn = ln
-		p.serve("http", proxy.NewServer(monitor.Middleware("http", p.hooks, p.pipeline(target))), ln)
+		srv := proxy.NewServer(monitor.Middleware("http", p.hooks, p.hooksTimed, p.pipeline(target)))
+		p.serve("http", srv, ln, nil)
 	}
 	if p.Https != off {
 		if p.Cert == off || p.Key == off {
@@ -98,13 +107,13 @@ func (p *Police) ServiceStartup(ks *kettlingar.KettlingarService) error {
 			return fmt.Errorf("listen https: %w", err)
 		}
 		p.httpsLn = ln
-		srv := proxy.NewServer(monitor.Middleware("https", p.hooks, p.pipeline(targetHttps)))
+		srv := proxy.NewServer(monitor.Middleware("https", p.hooks, p.hooksTimed, p.pipeline(targetHttps)))
 		srv.TLSConfig = &tls.Config{
 			MinVersion:   tls.VersionTLS12,
 			NextProtos:   []string{"h2", "http/1.1"},
 			Certificates: []tls.Certificate{cert},
 		}
-		p.serve("https", srv, tls.NewListener(ln, srv.TLSConfig))
+		p.serve("https", srv, ln, srv.TLSConfig)
 	}
 	return nil
 }
@@ -115,17 +124,32 @@ func (p *Police) GetDocs() map[string]kettlingar.MethodDesc {
 			Help: "Redirect incoming TCP 80/443 to police's listeners",
 			Docs: "Installs nftables rules redirecting ports 80 and 443 to the ports police is\n" +
 				"listening on. With --local true, connections made on this host are\n" +
-				"redirected too. If the upstream is on port 80 or 443, connections from the\n" +
+				"redirected too. If an upstream is on a redirected port, connections from the\n" +
 				"daemon's own user are exempt, so police does not loop into itself.",
 		},
 		"firewall-off":    {Help: "Remove police's firewall redirect"},
 		"firewall-status": {Help: "Show police's firewall redirect rules"},
 		"requests":        {Help: "Show recently proxied requests"},
+		"rules-list": {
+			Help: "Show the header patterns requests are rejected by",
+			Docs: "Lists the patterns in the order they are tried. Use -f json to save them in\n" +
+				"the format rules-add --file reads.",
+		},
+		"rules-add": {
+			Help: "Add a header pattern: NAME REGEXP, or --file",
+			Docs: "rules-add NAME REGEXP adds a pattern; a request whose raw header matches it\n" +
+				"is rejected. The header is matched as sent, request line and CRLFs included;\n" +
+				"use (?i) for case-insensitive and (?m) for per-line ^ and $.\n\n" +
+				"--replace OLD puts the new pattern in OLD's place. --file PATH adds the\n" +
+				"patterns in a file written by rules-list -f json; PATH is read by the\n" +
+				"daemon and must be absolute. Nothing is changed if any pattern is invalid.",
+		},
+		"rules-rm": {Help: "Remove header patterns by name: NAME..."},
 	}
 }
 
 func (p *Police) pipeline(target *url.URL) http.Handler {
-	return rules.Filter(nil, p.rejected, proxy.New(target, p.upstreamError))
+	return rules.Filter([]rules.Rule{rules.Sanity{}, p.patterns}, p.rejected, p.rulesTimed, proxy.New(target, p.upstreamError))
 }
 
 func parseUpstream(raw string) (*url.URL, error) {
@@ -139,17 +163,16 @@ func parseUpstream(raw string) (*url.URL, error) {
 // serve counts connections as they are accepted, before any TLS handshake or
 // request, so traffic that reaches police shows up in metrics even when no
 // request completes.
-func (p *Police) serve(listener string, srv *http.Server, ln net.Listener) {
+func (p *Police) serve(listener string, srv *http.Server, ln net.Listener, tlsConfig *tls.Config) {
 	labels := kettlingar.MetricLabels{"listener": listener}
-	srv.ConnState = func(_ net.Conn, state http.ConnState) {
-		if state == http.StateNew {
-			p.ks.MetricsCount("proxy_connections_total", 1, kettlingar.PublicMetric, labels)
-		}
-	}
+	counted := countingListener{ln, func() {
+		p.ks.MetricsCount("proxy_connections_total", 1, kettlingar.PublicMetric, labels)
+	}}
+	srv.ConnContext = rules.ConnContext
 	p.servers = append(p.servers, srv)
 	p.ks.Logger.Info(serviceName+": proxying", "listener", listener, "listen", ln.Addr().String())
 	go func() {
-		if err := srv.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
+		if err := srv.Serve(rules.Listen(counted, tlsConfig, srv.MaxHeaderBytes)); !errors.Is(err, http.ErrServerClosed) {
 			p.ks.Logger.Error(serviceName+": proxy server error", "err", err)
 		}
 	}()
@@ -172,6 +195,26 @@ func (p *Police) upstreamError(r *http.Request, err error) {
 func (p *Police) rejected(r *http.Request, err error) {
 	p.ks.Logger.Info(serviceName+": request rejected", "method", r.Method, "url", r.URL.String(), "reason", err)
 	p.ks.MetricsCount("rules_rejected_total", 1, kettlingar.PublicMetric, nil)
+	if errors.As(err, new(rules.SanityError)) {
+		p.ks.MetricsCount("rules_invalid_total", 1, kettlingar.PublicMetric, nil)
+	}
+}
+
+type countingListener struct {
+	net.Listener
+	onAccept func()
+}
+
+func (l countingListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err == nil {
+		l.onAccept()
+	}
+	return c, err
+}
+
+func (p *Police) patternMatched(_ *http.Request, name string) {
+	p.ks.MetricsCount("rules_matched_total", 1, kettlingar.PublicMetric, kettlingar.MetricLabels{"rule": name})
 }
 
 func (p *Police) recordMetrics(rec *monitor.Record) {
@@ -179,4 +222,17 @@ func (p *Police) recordMetrics(rec *monitor.Record) {
 	p.ks.MetricsCount("proxy_requests_total", 1, kettlingar.PublicMetric, labels)
 	p.ks.MetricsSample("proxy_request_time_us", uint64(rec.Duration.Microseconds()),
 		kettlingar.PublicMetric, kettlingar.MetricLabels{"listener": rec.Listener})
+}
+
+func (p *Police) rulesTimed(_ *http.Request, d time.Duration) {
+	p.ks.MetricsCount("rules_checked_total", 1, kettlingar.PublicMetric, nil)
+	p.ks.MetricsSample("rules_check_time_us", uint64(d.Microseconds()), kettlingar.PublicMetric, nil)
+}
+
+// hooksTimed runs after the hooks, so the time it records includes the
+// metrics hook but not itself.
+func (p *Police) hooksTimed(listener string, d time.Duration) {
+	labels := kettlingar.MetricLabels{"listener": listener}
+	p.ks.MetricsCount("monitor_hooks_total", 1, kettlingar.PublicMetric, labels)
+	p.ks.MetricsSample("monitor_hook_time_us", uint64(d.Microseconds()), kettlingar.PublicMetric, labels)
 }

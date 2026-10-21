@@ -9,7 +9,8 @@
 
 - Maintain `ARCH-DECISIONS.md` in the project root. When a change makes or
   changes a high-level design decision, add or update a brief entry there
-  describing the decision and why it was made.
+  describing the decision and why it was made. Always read this file in full
+  on startup.
 
 - Every CLI command is an RPC method on the daemon (`Api*`/`PublicApi*`).
   The CLI only remote-controls the background service; never add commands
@@ -21,6 +22,9 @@
   Banned: history. A comment describes the code as it stands, never what it used
   to do, what changed, what was renamed, or which approach was tried first.
 
+- Git: The operator is responsible for git commits. Don't try.
+
+- Environment: You are in a container. Do not try to inspect the live system.
 
 ## Operator Feedback
 

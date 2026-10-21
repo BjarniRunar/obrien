@@ -37,10 +37,9 @@ type FirewallOnArgs struct {
 func (p *Police) ApiFirewallOn(ri *kettlingar.RequestInfo, args FirewallOnArgs) *FirewallResponse {
 	var incoming, local, notes []string
 	for _, r := range []struct {
-		from     int
-		ln       net.Listener
-		upstream *url.URL
-	}{{80, p.httpLn, p.upstream}, {443, p.httpsLn, p.upstreamHttps}} {
+		from int
+		ln   net.Listener
+	}{{80, p.httpLn}, {443, p.httpsLn}} {
 		if r.ln == nil {
 			continue
 		}
@@ -65,15 +64,15 @@ func (p *Police) ApiFirewallOn(ri *kettlingar.RequestInfo, args FirewallOnArgs) 
 				return firewallFailed(ri, "", fmt.Errorf("listener %s is not reachable on loopback, where local traffic is redirected", r.ln.Addr()))
 			}
 			match := ""
-			// An upstream on this port may be on this host, and police's
-			// connections to it would be redirected back into police. They
-			// can only be told apart by uid, which also exempts any client
-			// running as the daemon's user.
-			if upstreamPort(r.upstream) == r.from {
+			// Either listener's upstream on this port may be on this host,
+			// and police's connections to it would be redirected back into
+			// police. They can only be told apart by uid, which also exempts
+			// any client running as the daemon's user.
+			if upstreamPort(p.upstream) == r.from || upstreamPort(p.upstreamHttps) == r.from {
 				match = fmt.Sprintf("meta skuid != %d ", os.Getuid()) + match
 				notes = append(notes, fmt.Sprintf(
-					"local connections to port %d from uid %d (police's user) are not redirected, so police can reach its upstream %s\n",
-					r.from, os.Getuid(), r.upstream))
+					"local connections to port %d from uid %d (police's user) are not redirected, so police can reach its upstream\n",
+					r.from, os.Getuid()))
 			}
 			local = append(local, match+rule)
 		}

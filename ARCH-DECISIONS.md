@@ -67,9 +67,9 @@ redirected in the `prerouting` hook. Every rule matches only connections
 addressed to this host (`fib daddr type local`): prerouting also sees traffic
 routed through the host, such as containers or VMs connecting out to port
 443, and that must never be redirected. With `--local true`, connections made
-on the host are also redirected in the `output` hook. When the upstream is
-on port 80 or 443, packets from the daemon's uid to that port are exempt
-there, because otherwise police's connections to a local upstream would be
+on the host are also redirected in the `output` hook. When either
+listener's upstream is on a redirected port, packets from the daemon's uid
+to that port are exempt there, because otherwise police's connections to a local upstream would be
 redirected back into police. The uid is the only way the rule can tell those
 apart, and it also exempts clients running as that user, so the exemption is
 added only when it is needed.
@@ -109,3 +109,36 @@ connection pool is keyed on it, and a connection verified for one name is
 never reused for another. Requests without a host name, or for a name the
 web server's certificate doesn't cover, fail with 502 rather than being
 sent unverified.
+
+Re-encryption is the default, but an `http://` `--upstream-https` forwards
+TLS requests in cleartext (with `X-Forwarded-Proto: https`) to save the
+second TLS session's CPU where the local hop is trusted. This uses the
+existing setting rather than adding a flag, because the URL scheme already
+says how to talk to the upstream.
+
+## 7. Rules judge the raw header, and police parses it itself
+
+Requests are filtered on the header bytes the client actually sent, not on
+net/http's parsed view of them. Every request first passes a strict sanity
+check: anything that fails to parse, or has ambiguous framing, is rejected.
+Then a named, runtime-editable list of regular expressions is matched
+against the raw header.
+
+**Why:** an attack that relies on how a server parses a request is best
+caught before parsing smooths it over: net/http canonicalises names,
+merges and reorders fields, and tolerates some malformed input that the
+upstream may read differently. Rejecting anything unparseable means a rule
+can't be dodged by malformed syntax that the upstream reads differently.
+Regular expressions are a quick way to answer a new advisory without
+rebuilding police.
+
+**How:** `rules.Listen` wraps each connection and follows its HTTP/1.x
+framing itself to capture each header. Filter checks every captured header
+against the request net/http produced, so if the two parsers ever disagree
+about where a request starts, the request is rejected instead of being judged
+on the wrong bytes. Since net/http only serves HTTP/2 and sets `Request.TLS`
+for a bare `*tls.Conn`, `rules.Listen` also terminates TLS: HTTP/2
+connections go through unwrapped and their headers are rebuilt from the
+decoded request, which has no raw form. Patterns live in memory only and
+are managed with the `rules-*` commands (#3), using `rules-list -f json`
+output as the file format for `rules-add --file`.
