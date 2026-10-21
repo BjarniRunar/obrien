@@ -1,0 +1,6 @@
+[submodule "submodules/kettlingar"]
+	path = submodules/kettlingar
+	url = https://github.com/mailpile/kettlingar
+[submodule "submodules/kettlingar-go"]
+	path = submodules/kettlingar-go
+	url = https://github.com/mailpile/kettlingar-go
