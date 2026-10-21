@@ -107,8 +107,7 @@ itself.
 against it. That name is put in the outgoing URL, so the transport's
 connection pool is keyed on it, and a connection verified for one name is
 never reused for another. Requests without a host name, or for a name the
-web server's certificate doesn't cover, fail with 502 rather than being
-sent unverified.
+web server's certificate doesn't cover, fail with 502.
 
 Re-encryption is the default, but an `http://` `--upstream-https` forwards
 TLS requests in cleartext (with `X-Forwarded-Proto: https`) to save the
@@ -154,14 +153,13 @@ to Go's own implementations.
 
 ## 9. Blocked requests link to an explanation
 
-A request rejected by the rules gets a 403 with a minimal HTML page linking
-to a page that explains the block. Each pattern may name its own URL, and
-`--blocked-url` is the default; the rejection reason itself is still never
-sent to the client.
+A request rejected by the rules gets an error status (`--blocked-status`,
+default 502) with a minimal HTML page linking to a page that explains the
+block. Each pattern may name its own URL, and `--blocked-url` is the default;
+the rejection reason itself is still never sent to the client.
 
 **Why:** legitimate users caught by a rule need somewhere to learn why and
-what to do, but details of the rule would help an attacker evade it. A link
-lets the operator decide what to disclose, per rule where it matters.
+what to do.
 
 **How:** rules return a `rules.Rejection` error carrying the URL. URLs are
 limited to http(s) or absolute paths and HTML-escaped, so a rule cannot

@@ -7,7 +7,7 @@ and deciding whether it may pass. Forwarding itself lives in
 - `rules.go`: the `Rule` interface (`Check(*http.Request) error`, where an
   error means reject) and `Filter`, the middleware that attaches each
   request's `Header`, runs rules in order and answers the first rejection
-  with `403 Forbidden` and a small HTML page linking to the URL of the
+  with the status given to `Filter` and a small HTML page linking to the URL of the
   rule's `Rejection` error, or to Filter's default URL. The rejection
   reason goes to a `RejectFunc` callback (logged and counted by the
   daemon); it is never sent to the client. A
@@ -37,7 +37,7 @@ and deciding whether it may pass. Forwarding itself lives in
   A rejection carries the URL of the first matching pattern that has one.
   `Update` replaces same-named patterns in place and appends the rest.
   Edits are atomic and safe while traffic flows.
-- `rules_test.go`: tests for the parser, the patterns, the 403 page, and capture over real
+- `rules_test.go`: tests for the parser, the patterns, the block page, and capture over real
   connections (pipelining, chunked bodies, TLS with HTTP/1.1 and HTTP/2).
 
 The daemon runs `Sanity` then its `Patterns`, edited by the `rules-list`,

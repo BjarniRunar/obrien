@@ -32,7 +32,8 @@ type Obrien struct {
 	Cert          string `default:"off"   help:"TLS certificate file (PEM)"`
 	Key           string `default:"off"   help:"TLS private key file (PEM)"`
 
-	BlockedUrl string `default:"off" help:"Page linked from 403 responses explaining blocks, unless the rule sets its own, or off"`
+	BlockedStatus int    `default:"502" help:"HTTP status for requests blocked by rules (400-599)"`
+	BlockedUrl    string `default:"off" help:"Page linked from block responses explaining blocks, unless the rule sets its own, or off"`
 
 	RequestLog int `default:"1000" help:"Recent requests kept in memory, or 0"`
 
@@ -60,6 +61,9 @@ func (p *Obrien) ServiceStartup(ks *kettlingar.KettlingarService) error {
 	targetHttps, err := parseUpstream(p.UpstreamHttps)
 	if err != nil {
 		return err
+	}
+	if p.BlockedStatus < 400 || p.BlockedStatus > 599 {
+		return fmt.Errorf("--blocked-status %d: must be 400-599", p.BlockedStatus)
 	}
 	if p.BlockedUrl != off {
 		if err := rules.ValidURL(p.BlockedUrl); err != nil {
@@ -147,7 +151,7 @@ func (p *Obrien) GetDocs() map[string]kettlingar.MethodDesc {
 			Docs: "rules-add NAME REGEXP adds a pattern; a request whose raw header matches it\n" +
 				"is rejected. The header is matched as sent, request line and CRLFs included;\n" +
 				"use (?i) for case-insensitive and (?m) for per-line ^ and $.\n\n" +
-				"--url URL sets the page linked from the 403 response to explain the block,\n" +
+				"--url URL sets the page linked from the block response to explain the block,\n" +
 				"instead of --blocked-url: an http(s) URL or an absolute path.\n\n" +
 				"--replace OLD puts the new pattern in OLD's place. --file PATH loads the\n" +
 				"patterns in a file written by rules-list -f json: ones named like an\n" +
@@ -163,7 +167,7 @@ func (p *Obrien) pipeline(target *url.URL) http.Handler {
 	if infoURL == off {
 		infoURL = ""
 	}
-	return rules.Filter([]rules.Rule{rules.Sanity{}, p.patterns}, infoURL, p.rejected, p.rulesTimed, proxy.New(target, p.upstreamError))
+	return rules.Filter([]rules.Rule{rules.Sanity{}, p.patterns}, p.BlockedStatus, infoURL, p.rejected, p.rulesTimed, proxy.New(target, p.upstreamError))
 }
 
 func parseUpstream(raw string) (*url.URL, error) {

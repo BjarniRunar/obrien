@@ -136,7 +136,7 @@ func serve(t *testing.T, tlsConfig *tls.Config) (string, chan error) {
 	rejects := make(chan error, 100)
 	p := NewPatterns(nil)
 	p.Add([]Pattern{{Name: "evil", Regexp: "evil"}}, "")
-	h := Filter([]Rule{Sanity{}, p}, "", func(_ *http.Request, err error) { rejects <- err }, nil,
+	h := Filter([]Rule{Sanity{}, p}, http.StatusForbidden, "", func(_ *http.Request, err error) { rejects <- err }, nil,
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			io.Copy(io.Discard, r.Body)
 			proto := "plain"
@@ -273,7 +273,7 @@ func TestForbiddenPage(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		srv := &http.Server{Handler: Filter([]Rule{Sanity{}, p}, tc.infoURL, nil, nil, http.NotFoundHandler()), ConnContext: ConnContext}
+		srv := &http.Server{Handler: Filter([]Rule{Sanity{}, p}, http.StatusBadGateway, tc.infoURL, nil, nil, http.NotFoundHandler()), ConnContext: ConnContext}
 		go srv.Serve(Listen(ln, nil, 1<<16))
 		resp, err := http.Get("http://" + ln.Addr().String() + tc.path)
 		if err != nil {
@@ -282,7 +282,7 @@ func TestForbiddenPage(t *testing.T) {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		srv.Close()
-		if resp.StatusCode != http.StatusForbidden || !strings.Contains(string(body), tc.want) ||
+		if resp.StatusCode != http.StatusBadGateway || !strings.Contains(string(body), tc.want) ||
 			!strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html") {
 			t.Errorf("%s: %d %q, want %q", tc.path, resp.StatusCode, body, tc.want)
 		}

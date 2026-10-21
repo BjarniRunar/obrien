@@ -80,7 +80,8 @@ daemon is up to see every command it offers.
 | `--cert`     | `off`                   | TLS certificate (PEM)                |
 | `--key`      | `off`                   | TLS private key (PEM)                |
 | `--request-log` | `1000`               | Recent requests kept in memory, or `0` to disable |
-| `--blocked-url` | `off`                | Page linked from 403 responses to explain the block, unless the rule sets its own |
+| `--blocked-status` | `502`             | HTTP status for blocked requests (400-599) |
+| `--blocked-url` | `off`                | Page linked from block responses to explain the block, unless the rule sets its own |
 
 Each setting can also come from a `OBRIEN_<NAME>` environment variable (for
 example `OBRIEN_UPSTREAM`), or from `obrien.yaml` in the user config directory
@@ -91,7 +92,7 @@ example `OBRIEN_UPSTREAM`), or from `obrien.yaml` in the user config directory
 Every request's header is checked before it is proxied. A header that does
 not parse strictly, or has ambiguous framing (e.g. duplicate
 `Content-Length`, or both `Content-Length` and `Transfer-Encoding`), is
-rejected with 403 and counted in `rules_invalid_total`.
+rejected and counted in `rules_invalid_total`.
 
 Then the raw header, exactly as sent (request line, fields, CRLFs), is
 matched against named regular expressions ([Go syntax](https://pkg.go.dev/regexp/syntax));
@@ -117,8 +118,8 @@ at each line; lines end in `\r\n`, so `$` alone sees the `\r`. The patterns
 live only in the daemon's memory and are lost when it stops. `rules-add
 --file` must be given an absolute path, since the daemon reads it.
 
-A blocked request gets `403 Forbidden` with a short HTML page linking to a
-page explaining why: the URL of the first matching rule that has one
+A blocked request gets `--blocked-status` (default `502 Bad Gateway`) with
+a short HTML page linking to a page explaining why: the URL of the first matching rule that has one
 (`rules-add --url`), or else `--blocked-url`. With neither, the page has no
 link. URLs must be `http(s)://` or an absolute path on the same site.
 

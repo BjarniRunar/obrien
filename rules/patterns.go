@@ -35,7 +35,7 @@ func (e SanityError) Error() string { return "sanity: " + e.Err.Error() }
 func (e SanityError) Unwrap() error { return e.Err }
 
 // Pattern is a named regular expression matched against the raw header.
-// URL, if set, is the page linked from the 403 response explaining why the
+// URL, if set, is the page linked from the block response explaining why the
 // request was blocked; otherwise Filter's default is used.
 type Pattern struct {
 	Name   string `msgpack:"name" json:"name"`
@@ -246,7 +246,7 @@ func validName(s string) bool {
 }
 
 // ValidURL accepts "" (no URL), an http(s) URL or an absolute path, so the
-// link in the 403 page can never carry a script or other scheme.
+// link in the block page can never carry a script or other scheme.
 func ValidURL(s string) error {
 	if s == "" {
 		return nil

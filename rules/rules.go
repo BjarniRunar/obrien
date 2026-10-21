@@ -34,14 +34,14 @@ type RejectFunc func(r *http.Request, err error)
 type TimeFunc func(r *http.Request, d time.Duration)
 
 // Filter attaches each request's header (see HeaderFrom) and runs every rule
-// against it, in order. The first rule to reject a request ends it with 403
-// Forbidden and a short HTML page linking to the rule's Rejection URL, or
+// against it, in order. The first rule to reject a request ends it with the
+// given status and a short HTML page linking to the rule's Rejection URL, or
 // to infoURL if the rule gave none (no link if both are empty); otherwise
 // next handles it.
 //
 // Every request must pass through Filter, even with no rules, because it
 // also consumes the header Listen captured for it and restores Request.TLS.
-func Filter(rules []Rule, infoURL string, onReject RejectFunc, onTime TimeFunc, next http.Handler) http.Handler {
+func Filter(rules []Rule, status int, infoURL string, onReject RejectFunc, onTime TimeFunc, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		h, tlsState := takeHeader(r)
@@ -62,7 +62,7 @@ func Filter(rules []Rule, infoURL string, onReject RejectFunc, onTime TimeFunc, 
 				if errors.As(err, &rej) && rej.URL != "" {
 					link = rej.URL
 				}
-				forbidden(w, link)
+				blocked(w, status, link)
 				return
 			}
 		}
@@ -73,15 +73,15 @@ func Filter(rules []Rule, infoURL string, onReject RejectFunc, onTime TimeFunc, 
 	})
 }
 
-func forbidden(w http.ResponseWriter, link string) {
+func blocked(w http.ResponseWriter, status int, link string) {
 	h := w.Header()
 	h.Set("Content-Type", "text/html; charset=utf-8")
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Cache-Control", "no-store")
-	w.WriteHeader(http.StatusForbidden)
-	body := "<!DOCTYPE html>\n<title>403 Forbidden</title>\n<h1>Forbidden</h1>\n<p>This request was blocked."
+	w.WriteHeader(status)
+	body := "<!DOCTYPE html>\n<title>Sorry</title>\n<h1>Sorry</h1>\n<p>This request was blocked."
 	if link != "" {
-		body += ` <a href="` + html.EscapeString(link) + `">Why?</a>`
+		body += ` <a href="` + html.EscapeString(link) + `">Why? Click for details.</a>`
 	}
 	_, _ = w.Write([]byte(body + "</p>\n"))
 }
