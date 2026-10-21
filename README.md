@@ -45,7 +45,7 @@ on the next build.
 
 ```sh
 git submodule update --init   # fresh clone only
-make                          # builds ./obrien
+make                          # builds obrien
 ```
 
 The binary is statically linked (cgo is disabled), so it can be copied to
@@ -57,31 +57,30 @@ Requires Go 1.25.7+ (fetched automatically when `GOTOOLCHAIN=auto`).
 ## Usage
 
 ```sh
-./obrien start                 # cleartext on :8000 -> 127.0.0.1:80
+obrien start                 # cleartext on :9080 -> 127.0.0.1:80
 
-# Handle both HTTP and HTTPS traffic
-./obrien start --http :9080 \
-               --https :9443 --cert cert.pem --key key.pem
+# Handle both HTTP (:9080) and HTTPS (:9443) traffic
+obrien start --cert cert.pem --key key.pem
 
-./obrien firewall-on           # Intercept traffic using nft
-./obrien metrics               # OpenMetrics: proxy_*, rules_*, monitor_*
-./obrien requests --count 20   # most recent proxied requests
-./obrien rules-list            # header patterns, see below
-./obrien firewall-off          # Remove nft rules
-./obrien stop
+obrien firewall-on           # Intercept traffic using nft
+obrien metrics               # OpenMetrics: proxy_*, rules_*, monitor_*
+obrien requests --count 20   # most recent proxied requests
+obrien rules-list            # header patterns, see below
+obrien firewall-off          # Remove nft rules
+obrien stop
 ```
 
 `start` runs the daemon in the background and returns once its listeners are
 bound; a bad address or certificate makes it fail with a non-zero exit code.
-Add `--foreground` (`-F`) to keep it attached. Run `./obrien --help` while the
+Add `--foreground` (`-F`) to keep it attached. Run `obrien --help` while the
 daemon is up to see every command it offers.
 
 | Setting      | Default                 | Description                          |
 |--------------|-------------------------|--------------------------------------|
 | `--upstream` | `http://127.0.0.1:80`   | Where the cleartext listener forwards |
 | `--upstream-https` | `https://127.0.0.1:443` | Where the TLS listener forwards; an `http://` URL forwards cleartext |
-| `--http`     | `:8000`                 | Cleartext listen address, or `off`   |
-| `--https`    | `off`                   | TLS listen address, or `off`         |
+| `--http`     | `:9080`                 | Cleartext listen address, or `off`   |
+| `--https`    | `:9443`                 | TLS listen address, or `off`; only used when `--cert` and `--key` are set |
 | `--cert`     | `off`                   | TLS certificate (PEM)                |
 | `--key`      | `off`                   | TLS private key (PEM)                |
 | `--request-log` | `1000`               | Recent requests kept in memory, or `0` to disable |
@@ -110,13 +109,17 @@ are matched as HTTP/1-style text rebuilt from the request, with fields
 sorted by name.
 
 ```sh
-./obrien rules-add multipart '(?im)^content-type:\s*multipart/'
-./obrien rules-add --replace multipart multipart '(?im)^content-type:\s*multipart/form-data'
-./obrien rules-add --url https://example.com/blocked.html upload '(?im)^content-type:\s*multipart/'
-./obrien rules-rm multipart
-./obrien rules-list                              # each rule with its match count
-./obrien rules-list -f json > rules.json         # save
-./obrien rules-add --file "$PWD/rules.json"      # load: updates same-named rules, adds the rest
+obrien rules-add multipart '(?im)^content-type:\s*multipart/'
+obrien rules-add \
+     --replace multipart \
+     multipart '(?im)^content-type:\s*multipart/form-data'
+obrien rules-add \
+     --url https://example.com/blocked.html \
+     upload '(?im)^content-type:\s*multipart/'
+obrien rules-rm multipart
+obrien rules-list                          # each rule with its match count
+obrien rules-list -f json > rules.json     # save to file
+obrien rules-add --file "$PWD/rules.json"  # add/update rules from file
 ```
 
 Use `(?i)` for case-insensitive matching and `(?m)` to make `^` and `$` match
@@ -124,10 +127,11 @@ at each line; lines end in `\r\n`, so `$` alone sees the `\r`. The patterns
 live only in the daemon's memory and are lost when it stops. `rules-add
 --file` must be given an absolute path, since the daemon reads it.
 
-A blocked request gets `--blocked-status` (default `502 Bad Gateway`) with
-a short HTML page linking to a page explaining why: the URL of the first matching rule that has one
-(`rules-add --url`), or else `--blocked-url`. With neither, the page has no
-link. URLs must be `http(s)://` or an absolute path on the same site.
+A blocked request gets `--blocked-status` (default `502 Bad Gateway`) with a
+short HTML page linking to a page explaining why: the URL of the first matching
+rule that has one (`rules-add --url`), or else `--blocked-url`. With neither,
+the page has no link. URLs must be `http(s)://` or an absolute path on the same
+site.
 
 ### Sitting in front of a web server on ports 80 and 443
 
@@ -137,12 +141,13 @@ ports and forwards to `127.0.0.1:80` and `127.0.0.1:443`. The daemon then has
 the kernel firewall redirect incoming connections for 80/443 to obrien:
 
 ```sh
-./obrien start --http :8000 --https :8443 --cert cert.pem --key key.pem
-                          # forwards to 127.0.0.1:80 and https://127.0.0.1:443
-./obrien firewall-on     # 80 -> 8000, 443 -> 8443
-./obrien firewall-on --local true   # also redirect connections made on this host
-./obrien firewall-status    # show the installed rules and the kernel's counters
-./obrien firewall-off
+# Listen on 9080/9443, forward to 127.0.0.1:80 and https://127.0.0.1:443
+obrien start --cert cert.pem --key key.pem
+
+obrien firewall-on               # 80 -> 9080, 443 -> 9443
+obrien firewall-on --local true  # also redirect localhost connections
+obrien firewall-status           # show active rules and kernel's counters
+obrien firewall-off
 ```
 
 The daemon redirects to the ports its listeners actually bound, and only for
@@ -155,7 +160,7 @@ when the daemon stops.
 Only connections addressed to this host itself are redirected. Traffic routed
 through it, such as containers or VMs connecting out to port 80/443, is left
 alone. By default only traffic arriving from other hosts is redirected, and a
-loopback-only listener (e.g. `127.0.0.1:8000`) is refused because it cannot
+loopback-only listener (e.g. `127.0.0.1:9080`) is refused because it cannot
 receive that traffic. With `--local true`, connections made on the obrien
 host to its own addresses are redirected too, to loopback. In that mode:
 

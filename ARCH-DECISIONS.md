@@ -28,7 +28,9 @@ filter the traffic sent there.
   handle HTTP/1.1, HTTP/2 and TLS, keeping the dependency surface small.
 - **Listeners.** Cleartext HTTP and TLS termination can run together; each is
   its own `http.Server` sharing one request pipeline. TLS is 1.2+ and offers
-  HTTP/2.
+  HTTP/2. Both have default addresses (`:9080`, `:9443`), and the TLS
+  listener starts whenever a certificate and key are configured, so
+  enabling HTTPS takes only `--cert` and `--key`.
 - **Fail at start, not later.** Listeners are bound and certificates loaded in
   kettlingar's `ServiceStartup` hook, which runs before `obrien start` reports
   success, so a bad address or certificate fails the start command.

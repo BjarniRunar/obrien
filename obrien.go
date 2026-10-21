@@ -30,8 +30,8 @@ const off = "off"
 type Obrien struct {
 	Upstream      string `default:"http://127.0.0.1:80" help:"Upstream base URL"`
 	UpstreamHttps string `default:"https://127.0.0.1:443" help:"Upstream base URL for the TLS listener"`
-	Http          string `default:":8000" help:"Cleartext listen address, or off"`
-	Https         string `default:"off"   help:"TLS listen address, or off"`
+	Http          string `default:":9080" help:"Cleartext listen address, or off"`
+	Https         string `default:":9443" help:"TLS listen address (used once --cert and --key are set), or off"`
 	Cert          string `default:"off"   help:"TLS certificate file (PEM)"`
 	Key           string `default:"off"   help:"TLS private key file (PEM)"`
 
@@ -81,8 +81,17 @@ func (p *Obrien) ServiceStartup(ks *kettlingar.KettlingarService) error {
 			return fmt.Errorf("--blocked-url: %w", err)
 		}
 	}
-	if p.Http == off && p.Https == off {
-		return errors.New("at least one of --http or --https must be enabled")
+	if (p.Cert == off) != (p.Key == off) {
+		return errors.New("--cert and --key must be given together")
+	}
+	// --https has a default address, so without a certificate the TLS
+	// listener is simply not started rather than being an error.
+	https := p.Https
+	if p.Cert == off {
+		https = off
+	}
+	if p.Http == off && https == off {
+		return errors.New("no listener enabled: set --http, or --cert and --key for --https")
 	}
 
 	ks.MetricsHelp("proxy_connections_total", "Client connections accepted, by listener", kettlingar.PublicMetric)
@@ -116,15 +125,12 @@ func (p *Obrien) ServiceStartup(ks *kettlingar.KettlingarService) error {
 		srv := proxy.NewServer(monitor.Middleware("http", p.hooks, p.hooksTimed, p.pipeline(target)))
 		p.serve("http", srv, ln, nil)
 	}
-	if p.Https != off {
-		if p.Cert == off || p.Key == off {
-			return errors.New("--https requires --cert and --key")
-		}
+	if https != off {
 		cert, err := tls.LoadX509KeyPair(p.Cert, p.Key)
 		if err != nil {
 			return fmt.Errorf("load TLS keypair: %w", err)
 		}
-		ln, err := net.Listen("tcp", p.Https)
+		ln, err := net.Listen("tcp", https)
 		if err != nil {
 			return fmt.Errorf("listen https: %w", err)
 		}
