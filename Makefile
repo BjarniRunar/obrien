@@ -1,6 +1,10 @@
 BINARY := police
 GOFLAGS ?=
 
+# A pure-Go build is statically linked, so the binary runs on any Linux of
+# the same architecture regardless of its libc version.
+export CGO_ENABLED := 0
+
 # kettlingar-go is built from the local submodule via the replace directive
 # in go.mod, so edits under submodules/kettlingar-go are picked up directly.
 KETTLINGAR := submodules/kettlingar-go

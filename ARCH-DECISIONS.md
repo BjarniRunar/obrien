@@ -142,3 +142,12 @@ connections go through unwrapped and their headers are rebuilt from the
 decoded request, which has no raw form. Patterns live in memory only and
 are managed with the `rules-*` commands (#3), using `rules-list -f json`
 output as the file format for `rules-add --file`.
+
+## 8. Statically linked binaries
+
+The Makefile builds with cgo disabled, so `police` is a single statically
+linked binary.
+
+**Why:** it can be copied onto older machines without depending on their
+libc version. police needs nothing from cgo: DNS and user lookups fall back
+to Go's own implementations.

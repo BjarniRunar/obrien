@@ -15,10 +15,19 @@ import (
 )
 
 // RulesResponse is also the file format of rules-add --file, so that the
-// output of rules-list -f json can be read back.
+// output of rules-list -f json can be read back; Matches is ignored there.
 type RulesResponse struct {
-	Rules []rules.Pattern `msgpack:"rules" json:"rules"`
-	Error string          `msgpack:"error" json:"error,omitempty"`
+	Rules []RuleEntry `msgpack:"rules" json:"rules"`
+	Error string      `msgpack:"error" json:"error,omitempty"`
+}
+
+// RuleEntry is a pattern and its rules_matched_total count. The metric is
+// keyed by name, so the count survives replacing or re-adding a rule under
+// the same name, and only resets when the daemon restarts.
+type RuleEntry struct {
+	Name    string `msgpack:"name" json:"name"`
+	Regexp  string `msgpack:"regexp" json:"regexp"`
+	Matches uint64 `msgpack:"matches" json:"matches"`
 }
 
 func (r *RulesResponse) String() string {
@@ -28,14 +37,15 @@ func (r *RulesResponse) String() string {
 	if len(r.Rules) == 0 {
 		return "(no rules)"
 	}
-	width := len("NAME")
+	width, mwidth := len("NAME"), len("MATCHES")
 	for _, p := range r.Rules {
 		width = max(width, len(p.Name))
+		mwidth = max(mwidth, len(fmt.Sprint(p.Matches)))
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "%-*s  %s\n", width, "NAME", "REGEXP")
+	fmt.Fprintf(&b, "%-*s  %*s  %s\n", width, "NAME", mwidth, "MATCHES", "REGEXP")
 	for _, p := range r.Rules {
-		fmt.Fprintf(&b, "%-*s  %s\n", width, p.Name, p.Regexp)
+		fmt.Fprintf(&b, "%-*s  %*d  %s\n", width, p.Name, mwidth, p.Matches, p.Regexp)
 	}
 	return b.String()
 }
@@ -45,7 +55,15 @@ func (p *Police) rulesResult(ri *kettlingar.RequestInfo, err error) *RulesRespon
 		ri.HttpCode = http.StatusBadRequest
 		return &RulesResponse{Error: err.Error()}
 	}
-	return &RulesResponse{Rules: p.patterns.List()}
+	var entries []RuleEntry
+	for _, pat := range p.patterns.List() {
+		entries = append(entries, RuleEntry{
+			Name:    pat.Name,
+			Regexp:  pat.Regexp,
+			Matches: p.ks.MetricsCountValue("rules_matched_total", kettlingar.PublicMetric, kettlingar.MetricLabels{"rule": pat.Name}),
+		})
+	}
+	return &RulesResponse{Rules: entries}
 }
 
 func (p *Police) ApiRulesList(ri *kettlingar.RequestInfo) *RulesResponse {
@@ -94,7 +112,11 @@ func readRulesFile(path string) ([]rules.Pattern, error) {
 	if err := json.Unmarshal(data, &f); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	return f.Rules, nil
+	add := make([]rules.Pattern, len(f.Rules))
+	for i, e := range f.Rules {
+		add[i] = rules.Pattern{Name: e.Name, Regexp: e.Regexp}
+	}
+	return add, nil
 }
 
 type RulesRmArgs struct {

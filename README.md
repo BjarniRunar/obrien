@@ -48,6 +48,10 @@ git submodule update --init   # fresh clone only
 make                          # builds ./police
 ```
 
+The binary is statically linked (cgo is disabled), so it can be copied to
+other Linux machines of the same architecture, however old their libc.
+Cross-compile with e.g. `make GOARCH=arm64`.
+
 Requires Go 1.25.7+ (fetched automatically when `GOTOOLCHAIN=auto`).
 
 ## Usage
@@ -91,7 +95,9 @@ rejected with 403 and counted in `rules_invalid_total`.
 Then the raw header, exactly as sent (request line, fields, CRLFs), is
 matched against named regular expressions ([Go syntax](https://pkg.go.dev/regexp/syntax));
 any match rejects the request, and `rules_matched_total{rule="NAME"}`
-counts how often each one matched. HTTP/2 headers have no raw form, so they
+counts how often each one matched; `rules-list` shows the same count. It
+is kept by name, so it carries over when a rule is replaced or re-added
+under the same name, and resets when the daemon restarts. HTTP/2 headers have no raw form, so they
 are matched as HTTP/1-style text rebuilt from the request, with fields
 sorted by name.
 
@@ -99,6 +105,7 @@ sorted by name.
 ./police rules-add multipart '(?im)^content-type:\s*multipart/'
 ./police rules-add --replace multipart multipart '(?im)^content-type:\s*multipart/form-data'
 ./police rules-rm multipart
+./police rules-list                              # each rule with its match count
 ./police rules-list -f json > rules.json         # save
 ./police rules-add --file "$PWD/rules.json"      # load (path read by the daemon)
 ```
