@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	"police/proxy"
+	"obrien/proxy"
 )
 
 // Record summarises one request and its response.

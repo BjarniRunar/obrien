@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
@@ -34,9 +35,12 @@ func (e SanityError) Error() string { return "sanity: " + e.Err.Error() }
 func (e SanityError) Unwrap() error { return e.Err }
 
 // Pattern is a named regular expression matched against the raw header.
+// URL, if set, is the page linked from the 403 response explaining why the
+// request was blocked; otherwise Filter's default is used.
 type Pattern struct {
 	Name   string `msgpack:"name" json:"name"`
 	Regexp string `msgpack:"regexp" json:"regexp"`
+	URL    string `msgpack:"url" json:"url,omitempty"`
 }
 
 type compiled struct {
@@ -69,16 +73,20 @@ func (p *Patterns) Check(r *http.Request) error {
 		return errors.New("no header")
 	}
 	var matched []string
+	var infoURL string
 	for _, c := range *p.list.Load() {
 		if c.re.Match(h.Raw) {
 			matched = append(matched, c.Name)
+			if infoURL == "" {
+				infoURL = c.URL
+			}
 			if p.onMatch != nil {
 				p.onMatch(r, c.Name)
 			}
 		}
 	}
 	if len(matched) > 0 {
-		return fmt.Errorf("matched %s", strings.Join(matched, ", "))
+		return Rejection{URL: infoURL, Err: fmt.Errorf("matched %s", strings.Join(matched, ", "))}
 	}
 	return nil
 }
@@ -185,6 +193,9 @@ func compile(a Pattern) (compiled, error) {
 	if !validName(a.Name) {
 		return compiled{}, fmt.Errorf("invalid name %q: use letters, digits, '.', '_' or '-'", a.Name)
 	}
+	if err := ValidURL(a.URL); err != nil {
+		return compiled{}, fmt.Errorf("pattern %q: %w", a.Name, err)
+	}
 	re, err := regexp.Compile(a.Regexp)
 	if err != nil {
 		return compiled{}, fmt.Errorf("pattern %q: %w", a.Name, err)
@@ -232,4 +243,26 @@ func validName(s string) bool {
 		}
 	}
 	return true
+}
+
+// ValidURL accepts "" (no URL), an http(s) URL or an absolute path, so the
+// link in the 403 page can never carry a script or other scheme.
+func ValidURL(s string) error {
+	if s == "" {
+		return nil
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return fmt.Errorf("invalid URL %q: %w", s, err)
+	}
+	switch {
+	case u.Scheme == "http" || u.Scheme == "https":
+		if u.Host == "" {
+			return fmt.Errorf("invalid URL %q: no host", s)
+		}
+	case u.Scheme == "" && u.Host == "" && strings.HasPrefix(u.Path, "/"):
+	default:
+		return fmt.Errorf("invalid URL %q: use http(s):// or an absolute path", s)
+	}
+	return nil
 }

@@ -11,7 +11,7 @@ import (
 
 	"github.com/mailpile/kettlingar-go/kettlingar"
 
-	"police/rules"
+	"obrien/rules"
 )
 
 // RulesResponse is also the file format of rules-add --file, so that the
@@ -27,6 +27,7 @@ type RulesResponse struct {
 type RuleEntry struct {
 	Name    string `msgpack:"name" json:"name"`
 	Regexp  string `msgpack:"regexp" json:"regexp"`
+	URL     string `msgpack:"url" json:"url,omitempty"`
 	Matches uint64 `msgpack:"matches" json:"matches"`
 }
 
@@ -46,11 +47,14 @@ func (r *RulesResponse) String() string {
 	fmt.Fprintf(&b, "%-*s  %*s  %s\n", width, "NAME", mwidth, "MATCHES", "REGEXP")
 	for _, p := range r.Rules {
 		fmt.Fprintf(&b, "%-*s  %*d  %s\n", width, p.Name, mwidth, p.Matches, p.Regexp)
+		if p.URL != "" {
+			fmt.Fprintf(&b, "%-*s  %*s  url: %s\n", width, "", mwidth, "", p.URL)
+		}
 	}
 	return b.String()
 }
 
-func (p *Police) rulesResult(ri *kettlingar.RequestInfo, err error) *RulesResponse {
+func (p *Obrien) rulesResult(ri *kettlingar.RequestInfo, err error) *RulesResponse {
 	if err != nil {
 		ri.HttpCode = http.StatusBadRequest
 		return &RulesResponse{Error: err.Error()}
@@ -60,13 +64,14 @@ func (p *Police) rulesResult(ri *kettlingar.RequestInfo, err error) *RulesRespon
 		entries = append(entries, RuleEntry{
 			Name:    pat.Name,
 			Regexp:  pat.Regexp,
+			URL:     pat.URL,
 			Matches: p.ks.MetricsCountValue("rules_matched_total", kettlingar.PublicMetric, kettlingar.MetricLabels{"rule": pat.Name}),
 		})
 	}
 	return &RulesResponse{Rules: entries}
 }
 
-func (p *Police) ApiRulesList(ri *kettlingar.RequestInfo) *RulesResponse {
+func (p *Obrien) ApiRulesList(ri *kettlingar.RequestInfo) *RulesResponse {
 	return p.rulesResult(ri, nil)
 }
 
@@ -74,13 +79,14 @@ type RulesAddArgs struct {
 	Args    []string
 	Replace string
 	File    string
+	Url     string
 }
 
-func (p *Police) ApiRulesAdd(ri *kettlingar.RequestInfo, args RulesAddArgs) *RulesResponse {
+func (p *Obrien) ApiRulesAdd(ri *kettlingar.RequestInfo, args RulesAddArgs) *RulesResponse {
 	var add []rules.Pattern
 	switch {
-	case args.File != "" && (len(args.Args) > 0 || args.Replace != ""):
-		return p.rulesResult(ri, errors.New("--file takes no NAME REGEXP or --replace"))
+	case args.File != "" && (len(args.Args) > 0 || args.Replace != "" || args.Url != ""):
+		return p.rulesResult(ri, errors.New("--file takes no NAME REGEXP, --replace or --url"))
 	case args.File != "":
 		add, err := readRulesFile(args.File)
 		if err == nil {
@@ -91,9 +97,9 @@ func (p *Police) ApiRulesAdd(ri *kettlingar.RequestInfo, args RulesAddArgs) *Rul
 		}
 		return p.rulesResult(ri, err)
 	case len(args.Args) == 2:
-		add = []rules.Pattern{{Name: args.Args[0], Regexp: args.Args[1]}}
+		add = []rules.Pattern{{Name: args.Args[0], Regexp: args.Args[1], URL: args.Url}}
 	default:
-		return p.rulesResult(ri, errors.New("usage: rules-add [--replace OLD] NAME REGEXP, or rules-add --file PATH"))
+		return p.rulesResult(ri, errors.New("usage: rules-add [--replace OLD] [--url URL] NAME REGEXP, or rules-add --file PATH"))
 	}
 	err := p.patterns.Add(add, args.Replace)
 	if err == nil {
@@ -118,7 +124,7 @@ func readRulesFile(path string) ([]rules.Pattern, error) {
 	}
 	add := make([]rules.Pattern, len(f.Rules))
 	for i, e := range f.Rules {
-		add[i] = rules.Pattern{Name: e.Name, Regexp: e.Regexp}
+		add[i] = rules.Pattern{Name: e.Name, Regexp: e.Regexp, URL: e.URL}
 	}
 	return add, nil
 }
@@ -127,7 +133,7 @@ type RulesRmArgs struct {
 	Args []string
 }
 
-func (p *Police) ApiRulesRm(ri *kettlingar.RequestInfo, args RulesRmArgs) *RulesResponse {
+func (p *Obrien) ApiRulesRm(ri *kettlingar.RequestInfo, args RulesRmArgs) *RulesResponse {
 	err := p.patterns.Remove(args.Args)
 	if err == nil {
 		p.ks.Logger.Info(serviceName+": rules removed", "names", strings.Join(args.Args, " "))

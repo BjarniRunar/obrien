@@ -20,5 +20,5 @@ produces no Record.
 
 The daemon installs two hooks: its metrics (`proxy_requests_total`,
 `proxy_request_time_us`) and, unless `--request-log 0`, a `Log` that the
-`police requests` command reads. The hooks' own cost is recorded as
+`obrien requests` command reads. The hooks' own cost is recorded as
 `monitor_hooks_total` and `monitor_hook_time_us`, by listener.

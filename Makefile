@@ -1,4 +1,4 @@
-BINARY := police
+BINARY := obrien
 GOFLAGS ?=
 
 # A pure-Go build is statically linked, so the binary runs on any Linux of

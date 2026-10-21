@@ -14,9 +14,9 @@ import (
 	"github.com/mailpile/kettlingar-go/kettlingar"
 )
 
-// nftTable holds every rule police installs, so removal is a single table
+// nftTable holds every rule obrien installs, so removal is a single table
 // delete that cannot touch anyone else's rules.
-const nftTable = "inet police"
+const nftTable = "inet obrien"
 
 type FirewallResponse struct {
 	Output string `msgpack:"output" json:"output"`
@@ -34,7 +34,7 @@ type FirewallOnArgs struct {
 	Local bool `default:"false"`
 }
 
-func (p *Police) ApiFirewallOn(ri *kettlingar.RequestInfo, args FirewallOnArgs) *FirewallResponse {
+func (p *Obrien) ApiFirewallOn(ri *kettlingar.RequestInfo, args FirewallOnArgs) *FirewallResponse {
 	var incoming, local, notes []string
 	for _, r := range []struct {
 		from int
@@ -65,13 +65,13 @@ func (p *Police) ApiFirewallOn(ri *kettlingar.RequestInfo, args FirewallOnArgs) 
 			}
 			match := ""
 			// Either listener's upstream on this port may be on this host,
-			// and police's connections to it would be redirected back into
-			// police. They can only be told apart by uid, which also exempts
+			// and obrien's connections to it would be redirected back into
+			// obrien. They can only be told apart by uid, which also exempts
 			// any client running as the daemon's user.
 			if upstreamPort(p.upstream) == r.from || upstreamPort(p.upstreamHttps) == r.from {
 				match = fmt.Sprintf("meta skuid != %d ", os.Getuid()) + match
 				notes = append(notes, fmt.Sprintf(
-					"local connections to port %d from uid %d (police's user) are not redirected, so police can reach its upstream\n",
+					"local connections to port %d from uid %d (obrien's user) are not redirected, so obrien can reach its upstream\n",
 					r.from, os.Getuid()))
 			}
 			local = append(local, match+rule)
@@ -92,7 +92,7 @@ func (p *Police) ApiFirewallOn(ri *kettlingar.RequestInfo, args FirewallOnArgs) 
 	return status
 }
 
-// upstreamPort returns the TCP port police connects to for its upstream.
+// upstreamPort returns the TCP port obrien connects to for its upstream.
 func upstreamPort(u *url.URL) int {
 	if port, err := strconv.Atoi(u.Port()); err == nil {
 		return port
@@ -112,7 +112,7 @@ func natChain(name, hook string, rules []string) string {
 		name, hook, strings.Join(rules, "\n\t\t"))
 }
 
-func (p *Police) ApiFirewallOff(ri *kettlingar.RequestInfo) *FirewallResponse {
+func (p *Obrien) ApiFirewallOff(ri *kettlingar.RequestInfo) *FirewallResponse {
 	if out, err := runNft(deleteTableScript()); err != nil {
 		return firewallFailed(ri, out, err)
 	}
@@ -120,7 +120,7 @@ func (p *Police) ApiFirewallOff(ri *kettlingar.RequestInfo) *FirewallResponse {
 	return &FirewallResponse{Output: "removed table " + nftTable + "\n"}
 }
 
-func (p *Police) ApiFirewallStatus(ri *kettlingar.RequestInfo) *FirewallResponse {
+func (p *Obrien) ApiFirewallStatus(ri *kettlingar.RequestInfo) *FirewallResponse {
 	out, err := sudoNft(nil, "list", "table", nftTable)
 	if err != nil {
 		return firewallFailed(ri, out, err)
@@ -150,7 +150,7 @@ func listenerAddr(addr net.Addr) (net.IP, int, error) {
 	return ip, port, err
 }
 
-// deleteTableScript removes the police table whether or not it exists:
+// deleteTableScript removes the obrien table whether or not it exists:
 // declaring an empty table first makes the delete always succeed, and older
 // nft releases lack "destroy table".
 func deleteTableScript() string {

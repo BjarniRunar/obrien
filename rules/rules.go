@@ -4,6 +4,8 @@
 package rules
 
 import (
+	"errors"
+	"html"
 	"net/http"
 	"time"
 )
@@ -14,6 +16,16 @@ type Rule interface {
 	Check(r *http.Request) error
 }
 
+// Rejection is a rule error naming the page that explains the rejection.
+// An empty URL means Filter's default.
+type Rejection struct {
+	URL string
+	Err error
+}
+
+func (e Rejection) Error() string { return e.Err.Error() }
+func (e Rejection) Unwrap() error { return e.Err }
+
 // RejectFunc is called for each rejected request, e.g. to log or count it.
 type RejectFunc func(r *http.Request, err error)
 
@@ -23,11 +35,13 @@ type TimeFunc func(r *http.Request, d time.Duration)
 
 // Filter attaches each request's header (see HeaderFrom) and runs every rule
 // against it, in order. The first rule to reject a request ends it with 403
-// Forbidden; otherwise next handles it.
+// Forbidden and a short HTML page linking to the rule's Rejection URL, or
+// to infoURL if the rule gave none (no link if both are empty); otherwise
+// next handles it.
 //
 // Every request must pass through Filter, even with no rules, because it
 // also consumes the header Listen captured for it and restores Request.TLS.
-func Filter(rules []Rule, onReject RejectFunc, onTime TimeFunc, next http.Handler) http.Handler {
+func Filter(rules []Rule, infoURL string, onReject RejectFunc, onTime TimeFunc, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		h, tlsState := takeHeader(r)
@@ -43,7 +57,12 @@ func Filter(rules []Rule, onReject RejectFunc, onTime TimeFunc, next http.Handle
 				if onReject != nil {
 					onReject(r, err)
 				}
-				http.Error(w, "Forbidden", http.StatusForbidden)
+				link := infoURL
+				var rej Rejection
+				if errors.As(err, &rej) && rej.URL != "" {
+					link = rej.URL
+				}
+				forbidden(w, link)
 				return
 			}
 		}
@@ -52,4 +71,17 @@ func Filter(rules []Rule, onReject RejectFunc, onTime TimeFunc, next http.Handle
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func forbidden(w http.ResponseWriter, link string) {
+	h := w.Header()
+	h.Set("Content-Type", "text/html; charset=utf-8")
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusForbidden)
+	body := "<!DOCTYPE html>\n<title>403 Forbidden</title>\n<h1>Forbidden</h1>\n<p>This request was blocked."
+	if link != "" {
+		body += ` <a href="` + html.EscapeString(link) + `">Why?</a>`
+	}
+	_, _ = w.Write([]byte(body + "</p>\n"))
 }

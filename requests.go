@@ -8,7 +8,7 @@ import (
 
 	"github.com/mailpile/kettlingar-go/kettlingar"
 
-	"police/monitor"
+	"obrien/monitor"
 )
 
 type RequestsArgs struct {
@@ -33,7 +33,7 @@ func (r *RequestsResponse) String() string {
 	return b.String()
 }
 
-func (p *Police) ApiRequests(ri *kettlingar.RequestInfo, args RequestsArgs) *RequestsResponse {
+func (p *Obrien) ApiRequests(ri *kettlingar.RequestInfo, args RequestsArgs) *RequestsResponse {
 	if p.log == nil {
 		ri.HttpCode = http.StatusNotFound
 		return &RequestsResponse{Error: "request log is disabled (--request-log 0)"}

@@ -63,23 +63,25 @@ func TestPatterns(t *testing.T) {
 		matches[name]++
 		mu.Unlock()
 	})
-	if err := p.Add([]Pattern{{"mp", `(?im)^content-type:\s*multipart/`}, {"evil", `/evil`}}, ""); err != nil {
+	if err := p.Add([]Pattern{{Name: "mp", Regexp: `(?im)^content-type:\s*multipart/`}, {Name: "evil", Regexp: `/evil`}}, ""); err != nil {
 		t.Fatal(err)
 	}
 	for _, bad := range [][]Pattern{
-		{{"mp", "x"}},            // duplicate
-		{{"a", "x"}, {"a", "y"}}, // duplicate within add
-		{{"a b", "x"}},           // name
-		{{"ok", "("}},            // regexp
+		{{Name: "mp", Regexp: "x"}},                            // duplicate
+		{{Name: "a", Regexp: "x"}, {Name: "a", Regexp: "y"}},   // duplicate within add
+		{{Name: "a b", Regexp: "x"}},                           // name
+		{{Name: "ok", Regexp: "("}},                            // regexp
+		{{Name: "u", Regexp: "x", URL: "javascript:alert(1)"}}, // URL scheme
+		{{Name: "u", Regexp: "x", URL: "why"}},                 // relative URL
 	} {
 		if err := p.Add(bad, ""); err == nil {
 			t.Errorf("Add(%v) succeeded", bad)
 		}
 	}
-	if err := p.Add([]Pattern{{"x", "x"}}, "missing"); err == nil {
+	if err := p.Add([]Pattern{{Name: "x", Regexp: "x"}}, "missing"); err == nil {
 		t.Error("replace of missing pattern succeeded")
 	}
-	if err := p.Add([]Pattern{{"mp2", `(?im)^content-type:\s*multipart/form-data`}}, "mp"); err != nil {
+	if err := p.Add([]Pattern{{Name: "mp2", Regexp: `(?im)^content-type:\s*multipart/form-data`}}, "mp"); err != nil {
 		t.Fatal(err)
 	}
 	if got := p.List(); len(got) != 2 || got[0].Name != "mp2" || got[1].Name != "evil" {
@@ -101,13 +103,13 @@ func TestPatterns(t *testing.T) {
 		t.Errorf("matches = %v", matches)
 	}
 
-	if err := p.Update([]Pattern{{"evil", "/bad"}, {"new", "x"}, {"new", "y"}}); err == nil {
+	if err := p.Update([]Pattern{{Name: "evil", Regexp: "/bad"}, {Name: "new", Regexp: "x"}, {Name: "new", Regexp: "y"}}); err == nil {
 		t.Error("Update with a repeated name succeeded")
 	}
-	if err := p.Update([]Pattern{{"evil", "/bad"}, {"new", "x"}}); err != nil {
+	if err := p.Update([]Pattern{{Name: "evil", Regexp: "/bad"}, {Name: "new", Regexp: "x"}}); err != nil {
 		t.Fatal(err)
 	}
-	if got := p.List(); len(got) != 3 || got[1] != (Pattern{"evil", "/bad"}) || got[2].Name != "new" {
+	if got := p.List(); len(got) != 3 || got[1] != (Pattern{Name: "evil", Regexp: "/bad"}) || got[2].Name != "new" {
 		t.Fatalf("after Update: %v", got)
 	}
 	p.Remove([]string{"new"})
@@ -133,8 +135,8 @@ func serve(t *testing.T, tlsConfig *tls.Config) (string, chan error) {
 	}
 	rejects := make(chan error, 100)
 	p := NewPatterns(nil)
-	p.Add([]Pattern{{"evil", "evil"}}, "")
-	h := Filter([]Rule{Sanity{}, p}, func(_ *http.Request, err error) { rejects <- err }, nil,
+	p.Add([]Pattern{{Name: "evil", Regexp: "evil"}}, "")
+	h := Filter([]Rule{Sanity{}, p}, "", func(_ *http.Request, err error) { rejects <- err }, nil,
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			io.Copy(io.Discard, r.Body)
 			proto := "plain"
@@ -253,5 +255,36 @@ func TestCaptureTLS(t *testing.T) {
 		}
 	default:
 		t.Error("no rejection reported")
+	}
+}
+
+func TestForbiddenPage(t *testing.T) {
+	p := NewPatterns(nil)
+	if err := p.Add([]Pattern{{Name: "a", Regexp: "/a"}, {Name: "b", Regexp: "/b", URL: `https://x.example/why?r=b&q="`}}, ""); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ infoURL, path, want string }{
+		{"/blocked", "/a", `<a href="/blocked">`},
+		{"/blocked", "/b", `<a href="https://x.example/why?r=b&amp;q=&#34;">`},
+		{"/blocked", "/a/b", `<a href="https://x.example/why?r=b&amp;q=&#34;">`},
+		{"", "/a", "blocked.</p>"},
+	} {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		srv := &http.Server{Handler: Filter([]Rule{Sanity{}, p}, tc.infoURL, nil, nil, http.NotFoundHandler()), ConnContext: ConnContext}
+		go srv.Serve(Listen(ln, nil, 1<<16))
+		resp, err := http.Get("http://" + ln.Addr().String() + tc.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		srv.Close()
+		if resp.StatusCode != http.StatusForbidden || !strings.Contains(string(body), tc.want) ||
+			!strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html") {
+			t.Errorf("%s: %d %q, want %q", tc.path, resp.StatusCode, body, tc.want)
+		}
 	}
 }
