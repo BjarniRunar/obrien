@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package monitor observes every proxied request and passes a summary of it
 // to hooks, such as metrics or the in-memory request log.
 package monitor

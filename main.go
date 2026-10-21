@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Command obrien is a security-focused reverse HTTP proxy daemon. It accepts
 // cleartext HTTP and/or terminates TLS, and forwards requests to a single
 // upstream where they can be monitored and filtered.

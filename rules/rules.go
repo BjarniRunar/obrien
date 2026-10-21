@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package rules inspects requests before they are proxied, and decides
 // whether they may pass. Requests are judged on their raw header, which
 // Listen captures from the connection.
