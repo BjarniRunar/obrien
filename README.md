@@ -57,12 +57,17 @@ Requires Go 1.25.7+ (fetched automatically when `GOTOOLCHAIN=auto`).
 ## Usage
 
 ```sh
-./obrien start                                   # cleartext on :8000 -> 127.0.0.1:80
-./obrien start --upstream http://10.0.0.5:80 --http :80 \
-               --https :443 --cert cert.pem --key key.pem
-./obrien metrics                                 # OpenMetrics: proxy_*, rules_*, monitor_*
-./obrien requests --count 20                     # most recent proxied requests
-./obrien rules-list                              # header patterns, see below
+./obrien start                 # cleartext on :8000 -> 127.0.0.1:80
+
+# Handle both HTTP and HTTPS traffic
+./obrien start --http :9080 \
+               --https :9443 --cert cert.pem --key key.pem
+
+./obrien firewall-on           # Intercept traffic using nft
+./obrien metrics               # OpenMetrics: proxy_*, rules_*, monitor_*
+./obrien requests --count 20   # most recent proxied requests
+./obrien rules-list            # header patterns, see below
+./obrien firewall-off          # Remove nft rules
 ./obrien stop
 ```
 
@@ -80,6 +85,7 @@ daemon is up to see every command it offers.
 | `--cert`     | `off`                   | TLS certificate (PEM)                |
 | `--key`      | `off`                   | TLS private key (PEM)                |
 | `--request-log` | `1000`               | Recent requests kept in memory, or `0` to disable |
+| `--trusted-proxies` | `off`            | Comma-separated IPs/CIDRs whose `X-Forwarded-For` is kept and appended to |
 | `--blocked-status` | `502`             | HTTP status for blocked requests (400-599) |
 | `--blocked-url` | `off`                | Page linked from block responses to explain the block, unless the rule sets its own |
 

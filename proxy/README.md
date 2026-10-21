@@ -6,11 +6,14 @@ live in [`../rules`](../rules/README.md).
 
 - `proxy.go`: `New` builds the reverse proxy (pooled upstream connections,
   immediate flushing for streaming, `Host` preserved, `X-Forwarded-*` set,
+  keeping a client's own `X-Forwarded-For` only if it is a trusted proxy
+  (`ParseTrusted` reads the list),
   502 plus an `ErrorFunc` callback when the upstream fails). It always dials
   the target address; for an `https` target the TLS connection uses the
   client's SNI or `Host` as the server name and verifies the upstream's
   certificate against it. `NewServer`
   builds an `http.Server` with timeouts for untrusted clients.
+- `proxy_test.go`: tests for trusted `X-Forwarded-For` handling.
 - `bufpool.go`: reuses 32 KB copy buffers to cut allocations.
 - `statuswriter.go`: `StatusWriter` records the response status for
   monitoring, without hiding `Flush` from the proxy.

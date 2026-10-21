@@ -1,13 +1,18 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package proxy forwards HTTP requests to a single upstream. It knows nothing
 // about inspecting or filtering traffic; that is the job of package rules.
 package proxy
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/netip"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -21,7 +26,10 @@ type ErrorFunc func(r *http.Request, err error)
 // client asked for (its SNI, else its Host), and the upstream's certificate
 // is verified against that name rather than against target's host, which is
 // usually a local address. Connections are always dialled to target's host.
-func New(target *url.URL, onError ErrorFunc) http.Handler {
+//
+// X-Forwarded-For is set to the client's address. Only when the client is
+// in trusted is the X-Forwarded-For it sent kept, with its address appended.
+func New(target *url.URL, trusted []netip.Prefix, onError ErrorFunc) http.Handler {
 	dialer := &net.Dialer{
 		Timeout:   5 * time.Second,
 		KeepAlive: 30 * time.Second,
@@ -55,6 +63,10 @@ func New(target *url.URL, onError ErrorFunc) http.Handler {
 					r.Out.URL.Host = net.JoinHostPort(name, defaultPort("https"))
 				}
 			}
+			// ReverseProxy strips X-Forwarded-For from Out before Rewrite.
+			if xff := r.In.Header.Values("X-Forwarded-For"); len(xff) > 0 && isTrusted(r.In, trusted) {
+				r.Out.Header["X-Forwarded-For"] = xff
+			}
 			r.SetXForwarded()
 			r.Out.Host = r.In.Host // preserve the client's Host header
 		},
@@ -68,6 +80,43 @@ func New(target *url.URL, onError ErrorFunc) http.Handler {
 			}
 		},
 	}
+}
+
+// ParseTrusted parses a comma-separated list of IP addresses and CIDR
+// prefixes.
+func ParseTrusted(s string) ([]netip.Prefix, error) {
+	var out []netip.Prefix
+	for _, f := range strings.Split(s, ",") {
+		f = strings.TrimSpace(f)
+		if f == "" {
+			continue
+		}
+		if p, err := netip.ParsePrefix(f); err == nil {
+			out = append(out, p.Masked())
+		} else if a, err := netip.ParseAddr(f); err == nil {
+			out = append(out, netip.PrefixFrom(a.Unmap(), a.Unmap().BitLen()))
+		} else {
+			return nil, fmt.Errorf("invalid address or prefix %q", f)
+		}
+	}
+	return out, nil
+}
+
+func isTrusted(r *http.Request, trusted []netip.Prefix) bool {
+	if len(trusted) == 0 {
+		return false
+	}
+	ap, err := netip.ParseAddrPort(r.RemoteAddr)
+	if err != nil {
+		return false
+	}
+	addr := ap.Addr().Unmap()
+	for _, p := range trusted {
+		if p.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }
 
 // clientServerName returns the host name the client asked for, or "" if it

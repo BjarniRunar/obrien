@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"time"
 
@@ -35,6 +36,8 @@ type Obrien struct {
 	BlockedStatus int    `default:"502" help:"HTTP status for requests blocked by rules (400-599)"`
 	BlockedUrl    string `default:"off" help:"Page linked from block responses explaining blocks, unless the rule sets its own, or off"`
 
+	TrustedProxies string `default:"off" help:"Comma-separated IPs/CIDRs whose X-Forwarded-For is kept, or off"`
+
 	RequestLog int `default:"1000" help:"Recent requests kept in memory, or 0"`
 
 	ks            *kettlingar.KettlingarService
@@ -46,6 +49,7 @@ type Obrien struct {
 	httpLn        net.Listener
 	httpsLn       net.Listener
 	patterns      *rules.Patterns
+	trusted       []netip.Prefix
 }
 
 // ServiceStartup runs in the daemon before kettlingar signals readiness, so
@@ -61,6 +65,11 @@ func (p *Obrien) ServiceStartup(ks *kettlingar.KettlingarService) error {
 	targetHttps, err := parseUpstream(p.UpstreamHttps)
 	if err != nil {
 		return err
+	}
+	if p.TrustedProxies != off {
+		if p.trusted, err = proxy.ParseTrusted(p.TrustedProxies); err != nil {
+			return fmt.Errorf("--trusted-proxies: %w", err)
+		}
 	}
 	if p.BlockedStatus < 400 || p.BlockedStatus > 599 {
 		return fmt.Errorf("--blocked-status %d: must be 400-599", p.BlockedStatus)
@@ -167,7 +176,7 @@ func (p *Obrien) pipeline(target *url.URL) http.Handler {
 	if infoURL == off {
 		infoURL = ""
 	}
-	return rules.Filter([]rules.Rule{rules.Sanity{}, p.patterns}, p.BlockedStatus, infoURL, p.rejected, p.rulesTimed, proxy.New(target, p.upstreamError))
+	return rules.Filter([]rules.Rule{rules.Sanity{}, p.patterns}, p.BlockedStatus, infoURL, p.rejected, p.rulesTimed, proxy.New(target, p.trusted, p.upstreamError))
 }
 
 func parseUpstream(raw string) (*url.URL, error) {

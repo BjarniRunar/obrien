@@ -164,3 +164,18 @@ what to do.
 **How:** rules return a `rules.Rejection` error carrying the URL. URLs are
 limited to http(s) or absolute paths and HTML-escaped, so a rule cannot
 inject script into the page.
+
+## 10. X-Forwarded-For is only trusted from listed proxies
+
+By default obrien replaces any `X-Forwarded-For` a client sends with the
+client's own address. `--trusted-proxies` lists addresses (IPs or CIDRs)
+whose `X-Forwarded-For` is kept, with their own address appended.
+
+**Why:** a client can put anything in that header, so trusting it by default
+would let anyone spoof their address to the upstream. When obrien sits behind
+another proxy, though, the upstream needs the real client's address, and the
+operator knows which peers are proxies.
+
+**How:** only the directly connecting peer is checked; the chain it sends is
+passed on as given. Only `X-Forwarded-For` is kept: `X-Forwarded-Host` and
+`-Proto` always describe obrien's own listener.
