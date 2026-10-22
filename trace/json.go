@@ -2,6 +2,8 @@
 
 package trace
 
+import "slices"
+
 // jsonTok tokenizes JSON a byte at a time. Each key is emitted before its
 // value, each string or number as its word tokens, and the end of each
 // object or array as OE or LE; an empty object or array is EO or EL
@@ -19,6 +21,7 @@ type jsonTok struct {
 	lit   string // literal being read ("true", ...)
 	litN  int
 	surr  bool // the last \u escape was a high surrogate
+	mark  int  // length of out when the current member or scalar began
 }
 
 type jsonFrame struct {
@@ -97,6 +100,7 @@ func (j *jsonTok) byte(c byte) bool {
 		if c != '"' {
 			return false
 		}
+		j.mark = len(*j.out)
 		j.st, j.inKey = jString, true
 		return true
 	case jColon:
@@ -125,9 +129,15 @@ func (j *jsonTok) byte(c byte) bool {
 	return false
 }
 
+// value starts a value. Containers are opened with a "{" or "[" token for
+// sortJSON, which removes them.
 func (j *jsonTok) value(c byte) bool {
+	if !j.inObject() {
+		j.mark = len(*j.out)
+	}
 	switch {
 	case c == '{' || c == '[':
+		*j.out = append(*j.out, string(c))
 		j.stack = append(j.stack, jsonFrame{obj: c == '{'})
 		j.st = jValueOrClose
 		if c == '{' {
@@ -145,6 +155,10 @@ func (j *jsonTok) value(c byte) bool {
 		return false
 	}
 	return true
+}
+
+func (j *jsonTok) inObject() bool {
+	return len(j.stack) > 0 && j.stack[len(j.stack)-1].obj
 }
 
 // close ends the innermost container, which is empty if it closed straight
@@ -261,6 +275,79 @@ func (j *jsonTok) end() bool {
 		j.st = jAfter
 	}
 	return len(j.stack) == 0 && (j.st == jAfter || j.st == jValue)
+}
+
+// repair makes truncated input whole: an unfinished scalar is dropped,
+// along with its key, as is a key without a value, and every open container
+// is closed.
+func (j *jsonTok) repair() {
+	switch j.st {
+	case jString, jNumber, jLiteral:
+		*j.out = (*j.out)[:j.mark]
+	case jColon, jValue:
+		if j.inObject() {
+			*j.out = (*j.out)[:j.mark]
+		}
+	}
+	j.w = words{out: j.out}
+	j.k.take()
+	j.esc = 0
+	for len(j.stack) > 0 {
+		last := (*j.out)[len(*j.out)-1]
+		top := j.stack[len(j.stack)-1]
+		j.close(top.obj, last == "{" || last == "[")
+	}
+	j.st = jAfter
+}
+
+// sortJSON sorts the members of each object in tokens from jsonTok by key,
+// then by their value's tokens, and removes the "{" and "[" tokens. Lists
+// keep their order.
+func sortJSON(tokens []string) []string {
+	var out []string
+	for i := 0; i < len(tokens); {
+		i = sortValue(tokens, i, &out)
+	}
+	return out
+}
+
+func sortValue(in []string, i int, out *[]string) int {
+	switch in[i] {
+	case "{":
+		return sortObject(in, i+1, out)
+	case "[":
+		for i++; in[i] != "LE" && in[i] != "EL"; {
+			i = sortValue(in, i, out)
+		}
+	}
+	*out = append(*out, in[i])
+	return i + 1
+}
+
+func sortObject(in []string, i int, out *[]string) int {
+	var members [][]string
+	for in[i] != "OE" && in[i] != "EO" {
+		m := []string{in[i]}
+		if i++; in[i] == "{" || in[i] == "[" {
+			i = sortValue(in, i, &m)
+		} else {
+			for ; !isKey(in[i]) && in[i] != "OE" && in[i] != "EO"; i++ {
+				m = append(m, in[i])
+			}
+		}
+		members = append(members, m)
+	}
+	slices.SortStableFunc(members, comparePairs)
+	for _, m := range members {
+		*out = append(*out, m...)
+	}
+	*out = append(*out, in[i])
+	return i + 1
+}
+
+// isKey tells keys from the uppercase tokens jsonTok generates.
+func isKey(t string) bool {
+	return t[0] < 'A' || t[0] > 'Z'
 }
 
 func upper(s string) string {

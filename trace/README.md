@@ -12,12 +12,15 @@ traffic. Background: [`../issues/request-fingerprinting.md`](../issues/request-f
   judged and the request's `Body`: the request line, header count, MIME
   type, host and selected headers, then the body tokens.
 - `body.go`: `Body`, a request body wrapper that tokenizes the body as the
-  proxy streams it to the upstream, so nothing is buffered and there is no
-  size limit. It picks a tokenizer from the Content-Type, and is safe to
-  trace while the transport is still reading.
+  proxy streams it to the upstream, without buffering it. It picks a
+  tokenizer from the Content-Type, and is safe to trace while the transport
+  is still reading.
+- `file.go`: the tokenizer for one file (a whole body, or one multipart
+  part): sniffs its type, parses JSON and XML up to 20 KiB, closes what a
+  cut-off file left open, and summarises anything else by type and size.
 - `json.go`, `xml.go`, `form.go`, `multipart.go`: streaming tokenizers for
   each body type, fed a byte at a time; `form.go` also handles query
-  strings.
+  strings. `json.go` also sorts object keys once a file is complete.
 - `word.go`: word tokens, key normalisation and percent-decoding.
 - `trace_test.go`: golden-file tests over `testdata/requests/` (each
   traced all at once and a byte at a time, which must agree), the
@@ -41,13 +44,16 @@ request.
 | Token | Meaning |
 |---|---|
 | `A1` `P2` `B0` | Word tokens: type letter and length bucket |
+| `REST-A3` | The rest of a value after 10 word tokens: type letter and size bucket |
 | `page` `order` | Keys and XML names: lowercase, followed by zero or more word tokens |
 | `GET` `POST` … | Method, uppercased |
 | `HC1` | Header count bucket: fields (duplicates included) divided by 16, rounded up |
 | `MIME application_json` | Media type from `Content-Type`, one lowercase value |
 | `HOST example_com_8080` | Host, one lowercase value |
 | `HEADERS` | Selected headers follow |
-| `BODY JSON` / `XML` / `FORM` / `MULTIPART` / `OTHER` | Body follows, and its kind |
+| `BODY` | The body follows |
+| `JSON` / `XML` / `FORM` / `MULTIPART` / `OTHER` | The kind of a body or file, followed by its tokens |
+| `SZ4` | Size bucket of an `OTHER` file: its length in hex digits |
 | `TRUE` `FALSE` `NULL` | JSON literals |
 | `OE` `LE` | End of a JSON object or list |
 | `EO` `EL` | An empty JSON object or list |
@@ -56,8 +62,12 @@ request.
 | `TE` | End of an XML element |
 | `EE` | End of an XML element with no text or children |
 | `PART HS3` | A multipart part, with its header size bucket |
+| `FILE` | A part's file name follows, as word tokens |
+| `MORE` | Multipart parts after the 16th, or form or query pairs after the 64th, which are not traced |
+| `TRUNC` | The file was cut short: by the 20 KiB limit, or the body ending |
+| `INVALID` | The file is not valid JSON or XML; replaces its tokens |
 | `CLOK` `CLBAD` | `Content-Length` matched the body received, or not |
-| `ERR` | The body failed to parse; nothing more is emitted for it |
+| `ERR` | The body's framing failed to parse; nothing more is emitted for it |
 
 The order is: method, path, query, `HC`, `MIME`, `HOST`,
 `HEADERS`, `BODY`, `CLOK`/`CLBAD`.
@@ -72,6 +82,14 @@ its type and its length in bytes divided by 16, rounded up (1-16 bytes is
 - `A`: only ASCII letters and digits.
 - `P`: printable ASCII, with punctuation.
 - `B`: anything else (control characters, non-ASCII).
+
+A value gives at most 10 word tokens. If more follow, the rest of the value
+is one `REST-` token instead: the type letter that covers all of its
+non-whitespace bytes, and its size bucket counted as for `SZ` (the number
+of hex digits in its length, from its first non-whitespace byte to its
+last), so `REST-P3` is 256 bytes to 4 KiB with punctuation. This
+applies to every value: path segments, query, form and header values, file
+names, JSON strings, XML attribute values, and each run of XML text.
 
 Path segments, query and form values are percent-decoded first (and `+` is
 a space in queries and forms); invalid escapes are kept as they are. JSON
@@ -93,22 +111,43 @@ every key regex-safe. The MIME type and host are normalised the same way.
   URL target is traced by its path, and `*` is one segment.
 - **Query**: the first lowercase word after the method begins it. Pairs
   are split on `&`, keys lowercased, and pairs sorted by key and then by
-  their value's word tokens. A key without `=` has the value `B0`.
+  their value's word tokens. A key without `=` has the value `B0`. Only
+  the first 64 pairs are traced; `MORE` after the sorted pairs stands for
+  the rest.
 - **Headers**: after `HEADERS`, the fields `authorization`,
   `proxy_authorization`, `cookie`, `content_type`, `origin`,
   `access_control_request_method` and `access_control_request_headers`,
   each as its key and the word tokens of its value, sorted the same way.
   `cookie` has no value tokens: only whether there are cookies matters.
   Duplicates are all listed.
-- **Body**, after `BODY` and its kind, chosen from the media type:
-  - `JSON` (`application/json`, `*+json`): a walk of the document in
-    order. Each key is emitted before its value, strings and numbers as
-    their word tokens, and `true`, `false` and `null` as `TRUE`, `FALSE` and
-    `NULL`. There are no start markers: the end of each object or array is
-    `OE` or `LE`, and an empty object or array is `EO` or `EL` instead.
-    Keys are in document order, not sorted. For example `{"a":{"b":[]}}`
-    is `a b EL OE OE`.
-  - `XML` (`application/xml`, `text/xml`, `*+xml`): a walk of the document
+- **Body**, after `BODY`: `FORM` (`application/x-www-form-urlencoded`)
+  is traced as the query, and `MULTIPART` (`multipart/*`) as its parts.
+  Any other body is one file.
+- **Parts**: each part is `PART`, `HS` and its header block's size bucket,
+  its field name from `Content-Disposition` if it has one, `FILE` and the
+  word tokens of its file name if it has one (`My Report.pdf` is `A1 P1`),
+  then its contents as a file. Only the first 16 parts are traced; `MORE`
+  stands for the rest, so a trace's size is bounded.
+- **Files** are traced by kind:
+  - `JSON` if the media type (of the body, or the part's `Content-Type`)
+    is `application/json` or `*+json`, `XML` if it is `application/xml`,
+    `text/xml` or `*+xml`. Otherwise the type is sniffed: data starting
+    with `{` or `[` (after whitespace) is `JSON`, data starting with `<`
+    is `XML` unless it looks like HTML, and the rest is `OTHER`.
+  - `JSON` and `XML` are parsed from the first 20 KiB only. If the file is
+    cut short, by that limit or because the body ended, an unfinished
+    value, key, word, tag or entity is dropped (a key with it), every open
+    object, list or element is closed, and `TRUNC` follows the tokens. If
+    it still does not parse, `INVALID` replaces its tokens.
+  - `JSON`: a walk of the document. Each key is emitted before its
+    value, strings and numbers as their word tokens, and `true`, `false` and
+    `null` as `TRUE`, `FALSE` and `NULL`. There are no start markers: the
+    end of each object or array is `OE` or `LE`, and an empty object or
+    array is `EO` or `EL` instead. Each object's members are sorted by key,
+    then by their value's tokens, so key order never changes a trace; lists
+    keep their order. For example `{"b":[],"a":{"c":1}}` is
+    `a c A1 OE b EL OE`.
+  - `XML`: a walk of the document
     in order, in the same style as JSON. Each element is emitted as its
     name, then its attributes (sorted, as for the query, each name followed
     by its value's word tokens) and `AE`, or just `NA` if it has none, then
@@ -118,12 +157,12 @@ every key regex-safe. The MIME type and host are normalised the same way.
     processing instructions and declarations are skipped; CDATA is text.
     For example `<p lang="en">Hi <b>there</b></p>` is
     `p lang A1 AE A1 b NA A1 TE TE`.
-  - `FORM` (`application/x-www-form-urlencoded`): as the query.
-  - `MULTIPART` (`multipart/*`): each part as `PART`, `HS` and its header
-    block's size bucket, and its field name from `Content-Disposition` if
-    it has one. Part contents are skipped.
-  - `OTHER`: anything else; only the kind is traced.
-- `ERR` ends a body that does not parse (including a multipart body with
+  - `OTHER`: the media type sniffed from the first 512 bytes (as
+    `net/http` does, e.g. `image_png`, `text_plain`), then `SZ` and the
+    file's size bucket: the number of hex digits in its length (`SZ1` is
+    up to 15 bytes, `SZ3` up to 4 KiB, `SZ5` up to 1 MiB, …). The whole
+    file is counted, beyond the 20 KiB limit too.
+- `ERR` ends a body whose framing does not parse (a multipart body with
   no boundary, or that never ends), after whatever was traced before the
   error.
 - `CLOK` / `CLBAD` appear only with a `Content-Length` header, once the body
@@ -157,7 +196,7 @@ OPTIONS A1 A1 HC1 HOST example_com HEADERS access_control_request_headers P1 P1 
 A JSON body:
 
 ```
-PUT A1 A1 A1 HC1 MIME application_json HOST example_com HEADERS content_type P1 BODY JSON order id P3 items sku A1 qty A1 OE sku A1 qty A1 note B0 OE LE total P1 OE tags A1 A1 LE meta EO OE CLOK
+PUT A1 A1 A1 HC1 MIME application_json HOST example_com HEADERS content_type P1 BODY JSON meta EO order id P3 items qty A1 sku A1 OE note B0 qty A1 sku A1 OE LE total P1 OE tags A1 A1 LE OE CLOK
 ```
 
 An XML body:
@@ -169,5 +208,5 @@ POST A1 A1 HC1 MIME application_xml HOST example_com HEADERS content_type P1 BOD
 A multipart upload:
 
 ```
-POST A1 HC1 MIME multipart_form_data HOST example_com HEADERS content_type P2 P3 BODY MULTIPART PART HS3 title PART HS6 photo PART HS3 tags_ CLOK
+POST A1 HC1 MIME multipart_form_data HOST example_com HEADERS content_type P2 P3 BODY MULTIPART PART HS3 title OTHER text_plain SZ1 PART HS6 photo FILE P1 OTHER image_jpeg SZ3 PART HS3 tags_ OTHER text_plain SZ1 CLOK
 ```

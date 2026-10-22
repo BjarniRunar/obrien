@@ -97,15 +97,20 @@ func TestBodyNotRead(t *testing.T) {
 
 func TestWords(t *testing.T) {
 	for in, want := range map[string]string{
-		"":                      "B0",
-		"   ":                   "B0",
-		"abc123":                "A1",
-		"a-b":                   "P1",
-		"caf\xc3\xa9":           "B1",
-		"x\x00":                 "B1",
-		strings.Repeat("a", 16): "A1",
-		strings.Repeat("a", 17): "A2",
-		"hello big  world":      "A1 A1 A1",
+		"":                                      "B0",
+		"   ":                                   "B0",
+		"abc123":                                "A1",
+		"a-b":                                   "P1",
+		"caf\xc3\xa9":                           "B1",
+		"x\x00":                                 "B1",
+		strings.Repeat("a", 16):                 "A1",
+		strings.Repeat("a", 17):                 "A2",
+		"hello big  world":                      "A1 A1 A1",
+		"a b c d e f g h i j":                   "A1 A1 A1 A1 A1 A1 A1 A1 A1 A1",
+		"a b c d e f g h i j  ":                 "A1 A1 A1 A1 A1 A1 A1 A1 A1 A1",
+		"a b c d e f g h i j k":                 "A1 A1 A1 A1 A1 A1 A1 A1 A1 A1 REST-A1",
+		"a b c d e f g h i j k-l   m\xc3\xa9  ": "A1 A1 A1 A1 A1 A1 A1 A1 A1 A1 REST-B1",
+		"a b c d e f g h i j " + strings.Repeat("x ", 200): "A1 A1 A1 A1 A1 A1 A1 A1 A1 A1 REST-A3",
 	} {
 		if got := strings.Join(wordsOf(in), " "); got != want {
 			t.Errorf("wordsOf(%q) = %s, want %s", in, got, want)
@@ -185,8 +190,54 @@ func TestJSONStructure(t *testing.T) {
 		if !j.write([]byte(in)) || !j.end() {
 			t.Errorf("%s: parse failed", in)
 		}
-		if got := strings.Join(out, " "); got != want {
+		if got := strings.Join(sortJSON(out), " "); got != want {
 			t.Errorf("%s: got %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestTruncatedFiles checks how files cut short are closed.
+func TestTruncatedFiles(t *testing.T) {
+	for _, c := range []struct{ kind, in, want string }{
+		{"JSON", `{"a":1,"b":"x y`, "JSON a A1 OE TRUNC"},
+		{"JSON", `{"a":1,"b":`, "JSON a A1 OE TRUNC"},
+		{"JSON", `{"a":1,"b"`, "JSON a A1 OE TRUNC"},
+		{"JSON", `{"a":1,"b":tr`, "JSON a A1 OE TRUNC"},
+		{"JSON", `{"a":12`, "JSON EO TRUNC"},
+		{"JSON", `{"a":[1,"x\u00`, "JSON a A1 LE OE TRUNC"},
+		{"JSON", `{"z":{"b":[`, "JSON z b EL OE OE TRUNC"},
+		{"JSON", `[{"b":1,"a":`, "JSON b A1 OE LE TRUNC"},
+		{"JSON", `"abc`, "JSON TRUNC"},
+		{"JSON", `{"a":1}x`, "JSON INVALID TRUNC"},
+		{"XML", `<a x="1"><b>hello wor`, "XML a x A1 AE b NA A1 TE TE TRUNC"},
+		{"XML", `<a><b/><c y="`, "XML a NA b NA EE TE TRUNC"},
+		{"XML", `<a><!-- x`, "XML a NA EE TRUNC"},
+		{"XML", `<a>x &am`, "XML a NA A1 TE TRUNC"},
+		{"", `<r><s>1`, "XML r NA s NA TE TE TRUNC"},
+		{"", "\x89PNG\r\n\x1a\n", "OTHER image_png SZ1 TRUNC"},
+	} {
+		var out []string
+		f := newFile(&out, c.kind)
+		f.write([]byte(c.in))
+		f.end(false)
+		if got := strings.Join(out, " "); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestRestInXML checks that each XML text run and attribute value is
+// capped on its own.
+func TestRestInXML(t *testing.T) {
+	ten := "a b c d e f g h i j"
+	var out []string
+	x := newXML(&out)
+	in := `<r v="` + ten + ` k">` + ten + ` k-<c/>` + ten + `</r>`
+	if !x.write([]byte(in)) || !x.end() {
+		t.Fatal("parse failed")
+	}
+	want := "r v " + strings.Repeat("A1 ", 10) + "REST-A1 AE " + strings.Repeat("A1 ", 10) + "REST-P1 c NA EE " + strings.Repeat("A1 ", 10) + "TE"
+	if got := strings.Join(out, " "); got != want {
+		t.Errorf("got  %q\nwant %q", got, want)
 	}
 }

@@ -9,9 +9,11 @@ import (
 
 // form tokenizes application/x-www-form-urlencoded data, which is also the
 // syntax of query strings. Pairs are kept as tokens until end, which sorts
-// them by key and then by value tokens.
+// them by key and then by value tokens. Pairs after maxPairs are only
+// counted, and MORE follows the sorted pairs for all of them.
 type form struct {
 	pairs [][]string // key, then its word tokens
+	more  bool
 
 	inValue bool
 	started bool // the current pair has a byte
@@ -20,6 +22,9 @@ type form struct {
 	w       words
 	u       unescaper
 }
+
+// maxPairs caps the pairs traced from a form or query.
+const maxPairs = 64
 
 func newForm() *form {
 	f := &form{u: unescaper{plus: true}}
@@ -54,7 +59,11 @@ func (f *form) emit(c byte) {
 func (f *form) endPair() {
 	if f.started {
 		f.w.end()
-		f.pairs = append(f.pairs, append([]string{f.k.take()}, f.vals...))
+		if len(f.pairs) < maxPairs {
+			f.pairs = append(f.pairs, append([]string{f.k.take()}, f.vals...))
+		} else {
+			f.more = true
+		}
 	}
 	f.inValue, f.started, f.vals = false, false, nil
 	f.k.take()
@@ -72,5 +81,8 @@ func (f *form) end(out *[]string) {
 	})
 	for _, p := range f.pairs {
 		*out = append(*out, p...)
+	}
+	if f.more {
+		*out = append(*out, "MORE")
 	}
 }

@@ -1,1 +1,1 @@
-PUT A1 A1 HC1 MIME application_octet_stream HOST example_com HEADERS content_type P2 BODY OTHER CLOK
+PUT A1 A1 HC1 MIME application_octet_stream HOST example_com HEADERS content_type P2 BODY OTHER application_octet_stream SZ3 CLOK

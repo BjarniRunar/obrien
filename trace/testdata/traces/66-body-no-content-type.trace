@@ -1,1 +1,1 @@
-POST A1 HC1 HOST example_com BODY OTHER CLOK
+POST A1 HC1 HOST example_com BODY OTHER text_plain SZ1 CLOK

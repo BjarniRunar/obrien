@@ -1,1 +1,1 @@
-POST A1 HC1 MIME text_plain HOST example_com HEADERS content_type P1 BODY OTHER CLOK
+POST A1 HC1 MIME text_plain HOST example_com HEADERS content_type P1 BODY OTHER text_plain SZ2 CLOK

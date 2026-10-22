@@ -1,1 +1,1 @@
-PUT A1 A1 A1 HC1 MIME application_json HOST example_com HEADERS content_type P1 BODY JSON order id P3 items sku A1 qty A1 OE sku A1 qty A1 note B0 OE LE total P1 OE tags A1 A1 LE meta EO OE CLOK
+PUT A1 A1 A1 HC1 MIME application_json HOST example_com HEADERS content_type P1 BODY JSON meta EO order id P3 items qty A1 sku A1 OE note B0 qty A1 sku A1 OE LE total P1 OE tags A1 A1 LE OE CLOK

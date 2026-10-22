@@ -97,10 +97,10 @@ func Of(h *rules.Header, body *Body) string {
 	var total int64
 	ended := body == nil
 	if body != nil {
-		kind, tokens, n, e := body.state()
+		tokens, n, e := body.state()
 		total, ended = n, e
 		if n > 0 {
-			out = append(out, "BODY", kind)
+			out = append(out, "BODY")
 			out = append(out, tokens...)
 		}
 	}

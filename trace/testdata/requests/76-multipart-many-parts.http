@@ -1,0 +1,86 @@
+POST /upload HTTP/1.1
+Host: example.com
+Content-Type: multipart/form-data; boundary=b1
+Content-Length: 1108
+
+--b1
+Content-Disposition: form-data; name="f0"
+
+0
+--b1
+Content-Disposition: form-data; name="f1"
+
+1
+--b1
+Content-Disposition: form-data; name="f2"
+
+2
+--b1
+Content-Disposition: form-data; name="f3"
+
+3
+--b1
+Content-Disposition: form-data; name="f4"
+
+4
+--b1
+Content-Disposition: form-data; name="f5"
+
+5
+--b1
+Content-Disposition: form-data; name="f6"
+
+6
+--b1
+Content-Disposition: form-data; name="f7"
+
+7
+--b1
+Content-Disposition: form-data; name="f8"
+
+8
+--b1
+Content-Disposition: form-data; name="f9"
+
+9
+--b1
+Content-Disposition: form-data; name="f10"
+
+10
+--b1
+Content-Disposition: form-data; name="f11"
+
+11
+--b1
+Content-Disposition: form-data; name="f12"
+
+12
+--b1
+Content-Disposition: form-data; name="f13"
+
+13
+--b1
+Content-Disposition: form-data; name="f14"
+
+14
+--b1
+Content-Disposition: form-data; name="f15"
+
+15
+--b1
+Content-Disposition: form-data; name="f16"
+
+16
+--b1
+Content-Disposition: form-data; name="f17"
+
+17
+--b1
+Content-Disposition: form-data; name="f18"
+
+18
+--b1
+Content-Disposition: form-data; name="f19"
+
+19
+--b1--

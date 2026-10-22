@@ -1,1 +1,1 @@
-POST A1 A1 HC1 MIME application_vnd_api_json HOST example_com HEADERS content_type P2 BODY JSON data type A1 id A1 OE OE CLOK
+POST A1 A1 HC1 MIME application_vnd_api_json HOST example_com HEADERS content_type P2 BODY JSON data id A1 type A1 OE OE CLOK

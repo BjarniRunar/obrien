@@ -2,16 +2,29 @@
 
 package trace
 
-import "strconv"
+import (
+	"slices"
+	"strconv"
+	"strings"
+)
 
 // words turns a stream of value bytes into word tokens, one per
-// whitespace-separated piece, appending them to *out.
+// whitespace-separated piece, appending them to *out. After maxWords
+// tokens, the rest of the value is one REST token instead.
 type words struct {
-	out  *[]string
-	cls  byte // 'A', 'P' or 'B'; 0 between words
-	n    int
-	some bool // a token was emitted for this value
+	out   *[]string
+	cls   byte // 'A', 'P' or 'B'; 0 between words
+	n     int
+	some  bool // a token was emitted for this value
+	count int  // word tokens emitted for this value
+
+	restCls byte
+	restN   int64 // bytes of the rest, from its first non-space byte to its last
+	restWS  int64 // spaces after the rest so far, counted once more follows
 }
+
+// maxWords caps the word tokens of one value.
+const maxWords = 10
 
 func isSpace(c byte) bool {
 	return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\v' || c == '\f'
@@ -41,6 +54,10 @@ func rank(c byte) int {
 }
 
 func (w *words) add(c byte) {
+	if w.count >= maxWords {
+		w.addRest(c)
+		return
+	}
 	if isSpace(c) {
 		w.flush()
 		return
@@ -57,6 +74,30 @@ func (w *words) flush() {
 	}
 	*w.out = append(*w.out, token(w.cls, w.n))
 	w.cls, w.n, w.some = 0, 0, true
+	w.count++
+}
+
+func (w *words) addRest(c byte) {
+	if isSpace(c) {
+		if w.restN > 0 {
+			w.restWS++
+		}
+		return
+	}
+	w.restN += w.restWS + 1
+	w.restWS = 0
+	if cc := class(c); rank(cc) > rank(w.restCls) {
+		w.restCls = cc
+	}
+}
+
+// done ends a run of words, emitting REST-, the widest class of the rest's
+// bytes and its size bucket (as for SZ) if any words were cut off.
+func (w *words) done() {
+	if w.restN > 0 {
+		*w.out = append(*w.out, "REST-"+string(w.restCls)+strconv.Itoa(sizeBucket(w.restN)))
+	}
+	w.count, w.restCls, w.restN, w.restWS = 0, 0, 0, 0
 }
 
 // end finishes a value; a value without any word is B0.
@@ -65,6 +106,7 @@ func (w *words) end() {
 	if !w.some {
 		*w.out = append(*w.out, "B0")
 	}
+	w.done()
 	w.some = false
 }
 
@@ -190,4 +232,13 @@ func (u *unescaper) flush(emit func(byte)) {
 		emit(c)
 	}
 	u.pend = u.pend[:0]
+}
+
+// comparePairs orders a key followed by its value's tokens by key, then by
+// those tokens.
+func comparePairs(a, b []string) int {
+	if c := strings.Compare(a[0], b[0]); c != 0 {
+		return c
+	}
+	return slices.Compare(a[1:], b[1:])
 }

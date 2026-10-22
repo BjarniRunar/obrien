@@ -2,10 +2,10 @@
 
 ## Rules
 
+- Keep all text, comments, documents and interactions brief and to the point.
+
 - Every folder with Go code has a `README.md` describing its purpose and
-  contents. Keep these up to date with every change: when you add, remove,
-  rename or change the behaviour of something in a folder, update that
-  folder's README in the same change.
+  contents. Keep these up to date with every change.
 
 - Maintain `ARCH-DECISIONS.md` in the project root. When a change makes or
   changes a high-level design decision, add or update a brief entry there
@@ -19,8 +19,7 @@
 - Comments: Reserved for non-obvious side effects, preconditions, unenforced
   invariants, and protocol or source server behaviour that forced an unusual choice.
   Banned: restating the code.
-  Banned: history. A comment describes the code as it stands, never what it used
-  to do, what changed, what was renamed, or which approach was tried first.
+  Banned: no history lessons. A comment describes the code as it stands.
 
 - Git: The operator is responsible for git commits. Don't try.
 

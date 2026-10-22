@@ -219,12 +219,29 @@ is collected. The syntax is designed to be turned into readable regular
 expressions.
 
 **How:** the body is tokenized while the proxy streams it to the upstream,
-through a wrapper on `Request.Body`, so bodies are never buffered and there is
-no size limit. The rest of the trace comes from the raw header the rules judged
-(#7), which `rules.Filter` hands back to the monitor middleware through a slot
+through a wrapper on `Request.Body`, so bodies are never buffered. The rest
+of the trace comes from the raw header the rules judged (#7), which `rules.Filter` hands back to the monitor middleware through a slot
 in the request context. A body that is never read, such as a rejected
 request's, is not traced. Traces are only built when the request log or the
 trace log (#13) is on.
+
+Bodies are traced as files: a whole body, or each multipart part. JSON
+and XML files, which is what API calls carry, are parsed from their first
+20 KiB, and anything left open by a file cut short there (or by the body
+ending) is closed so the start of the file is still traced; `TRUNC` says
+it was cut. JSON object keys are sorted, so clients that order keys
+differently give the same trace, but lists keep their order, which usually
+means something. Files are sniffed rather than trusted to their media
+type, since API clients often mislabel them. Other files are only
+summarised by sniffed type and a coarse size bucket. Only the first 16
+multipart parts and the first 64 form or query pairs are traced, with
+`MORE` standing for the rest, so the number of parts or pairs cannot make
+a trace grow without bound. Likewise a value gives at most 10 word
+tokens, then one `REST-` token giving the class and a coarse size of the
+rest, so a long value still says what it held without making the trace
+long. Beyond the first 512 bytes of a file, kept to sniff its type, contents
+are never kept: only the current file's tokens are held until it ends, bounded by the 20 KiB they come from, since keys cannot be
+sorted before an object is complete.
 
 Only requests answered with a 2xx or 3xx status get a trace. The goal is a
 map of legitimate requests, and a 404, a 503 or a request the rules blocked

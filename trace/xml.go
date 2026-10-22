@@ -302,6 +302,7 @@ func (x *xmlTok) textByte(c byte) bool {
 func (x *xmlTok) endText() {
 	if x.inText {
 		x.w.flush()
+		x.w.done()
 		x.w.some, x.inText = false, false
 	}
 }
@@ -383,6 +384,22 @@ func charRef(name string) (rune, bool) {
 		n, err = strconv.ParseUint(name[1:], 10, 32)
 	}
 	return rune(n), err == nil
+}
+
+// repair makes truncated input whole: an unfinished word, entity or markup
+// is dropped and every open element is closed.
+func (x *xmlTok) repair() {
+	x.w, x.inText = words{}, false
+	x.ent, x.attrs, x.cdata = nil, nil, 0
+	x.k.take()
+	for i := len(x.stack) - 1; i >= 0; i-- {
+		end := "TE"
+		if x.stack[i].empty {
+			end = "EE"
+		}
+		*x.out = append(*x.out, end)
+	}
+	x.stack, x.st = nil, xText
 }
 
 func (x *xmlTok) end() bool {

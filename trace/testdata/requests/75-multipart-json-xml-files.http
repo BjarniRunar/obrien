@@ -1,0 +1,24 @@
+POST /upload HTTP/1.1
+Host: example.com
+Content-Type: multipart/form-data; boundary=b1
+Content-Length: 500
+
+--b1
+Content-Disposition: form-data; name="doc"; filename="My Report (final).json"
+Content-Type: application/octet-stream
+
+{"title":"t","author":{"name":"n"}}
+--b1
+Content-Disposition: form-data; name="cfg"; filename="cfg.xml"
+
+<?xml version="1.0"?><cfg><k v="1"/></cfg>
+--b1
+Content-Disposition: form-data; name="bad"
+Content-Type: application/json
+
+{"a":
+--b1
+Content-Disposition: form-data; name="page"; filename="index.html"
+
+<!DOCTYPE html><html><body>hi</body></html>
+--b1--

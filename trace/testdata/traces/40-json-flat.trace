@@ -1,1 +1,1 @@
-POST A1 A1 HC1 MIME application_json HOST example_com HEADERS content_type P1 BODY JSON name A1 A1 email P2 age A1 admin FALSE manager NULL OE CLOK
+POST A1 A1 HC1 MIME application_json HOST example_com HEADERS content_type P1 BODY JSON admin FALSE age A1 email P2 manager NULL name A1 A1 OE CLOK

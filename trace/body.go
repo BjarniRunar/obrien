@@ -15,11 +15,10 @@ import (
 // another goroutine reads, as the HTTP transport may still be sending the
 // body after the response has arrived.
 type Body struct {
-	rc   io.ReadCloser
-	kind string // JSON, XML, FORM, MULTIPART or OTHER
+	rc io.ReadCloser
 
 	mu     sync.Mutex
-	tokens []string
+	tokens []string  // the body's kind, then its tokens
 	tok    tokenizer // nil once the body failed to parse
 	total  int64
 	ended  bool // read to the end, or to where the client stopped sending
@@ -28,7 +27,7 @@ type Body struct {
 
 type tokenizer interface {
 	write(p []byte) bool
-	end() bool
+	end(complete bool) bool // complete is false if the client stopped early
 }
 
 // formTok adapts form to tokenizer; its pairs are only emitted at the end,
@@ -39,33 +38,25 @@ type formTok struct {
 }
 
 func (t formTok) write(p []byte) bool { t.f.write(p); return true }
-func (t formTok) end() bool           { t.f.end(t.out); return true }
-
-type otherTok struct{}
-
-func (otherTok) write([]byte) bool { return true }
-func (otherTok) end() bool         { return true }
+func (t formTok) end(bool) bool       { t.f.end(t.out); return true }
 
 // NewBody wraps rc, choosing how to tokenize it from its Content-Type.
 func NewBody(rc io.ReadCloser, contentType string) *Body {
 	b := &Body{rc: rc}
 	mt, params, _ := mime.ParseMediaType(contentType)
 	switch {
-	case mt == "application/json" || strings.HasSuffix(mt, "+json"):
-		b.kind, b.tok = "JSON", newJSON(&b.tokens)
-	case mt == "application/xml" || mt == "text/xml" || strings.HasSuffix(mt, "+xml"):
-		b.kind, b.tok = "XML", newXML(&b.tokens)
 	case mt == "application/x-www-form-urlencoded":
-		b.kind, b.tok = "FORM", formTok{newForm(), &b.tokens}
+		b.tokens = []string{"FORM"}
+		b.tok = formTok{newForm(), &b.tokens}
 	case strings.HasPrefix(mt, "multipart/"):
-		b.kind = "MULTIPART"
+		b.tokens = []string{"MULTIPART"}
 		if params["boundary"] == "" {
 			b.err = true
 		} else {
 			b.tok = newMultipart(&b.tokens, params["boundary"])
 		}
 	default:
-		b.kind, b.tok = "OTHER", otherTok{}
+		b.tok = newFile(&b.tokens, structured(mt))
 	}
 	return b
 }
@@ -79,7 +70,7 @@ func (b *Body) Read(p []byte) (int, error) {
 	}
 	if err == io.EOF || errors.Is(err, io.ErrUnexpectedEOF) {
 		b.ended = true
-		if b.tok != nil && !b.tok.end() {
+		if b.tok != nil && !b.tok.end(err == io.EOF) {
 			b.fail()
 		}
 		b.tok = nil
@@ -94,14 +85,14 @@ func (b *Body) fail() {
 
 func (b *Body) Close() error { return b.rc.Close() }
 
-// state returns the body's tokens so far, with ERR if it failed to parse,
-// and how much of it was read.
-func (b *Body) state() (kind string, tokens []string, total int64, ended bool) {
+// state returns the body's kind and tokens so far, with ERR if it failed to
+// parse, and how much of it was read.
+func (b *Body) state() (tokens []string, total int64, ended bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	tokens = append([]string(nil), b.tokens...)
 	if b.err {
 		tokens = append(tokens, "ERR")
 	}
-	return b.kind, tokens, b.total, b.ended
+	return tokens, b.total, b.ended
 }
