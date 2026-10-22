@@ -15,7 +15,9 @@ it exists to see and control that traffic, not to spread it across servers.
 - Every request passes through monitoring hooks: metrics, and a bounded
   in-memory log of recent requests (`obrien requests`). Requests answered
   with 2xx or 3xx also get a trace of their shape (path, query, selected
-  headers, body structure) without their content.
+  headers, body structure) without their content. With `--trace-log`, every
+  request is also appended to a file as an access-log line ending in its
+  trace, or `NOTRACE`.
 
 - Every request header must pass a strict sanity check (well-formed request
   line and fields, no ambiguous framing headers) or is rejected.
@@ -64,6 +66,10 @@ The binary is statically linked (cgo is disabled), so it can be copied to
 other Linux machines of the same architecture, however old their libc.
 Cross-compile with e.g. `make GOARCH=arm64`.
 
+Pushing a tag starting with `v` (e.g. `v0.1.0`) makes GitHub Actions
+(`.github/workflows/release.yml`) run the tests and publish a release with
+linux amd64 and arm64 binaries and their SHA-256 sums.
+
 Requires Go 1.26+ (fetched automatically when `GOTOOLCHAIN=auto`).
 
 ## Usage
@@ -96,6 +102,7 @@ daemon is up to see every command it offers.
 | `--cert`     | `off`                   | TLS certificate (PEM)                |
 | `--key`      | `off`                   | TLS private key (PEM)                |
 | `--request-log` | `1000`               | Recent requests kept in memory, or `0` to disable |
+| `--trace-log`   | `off`                | Absolute path of a file to append an access-log line with the trace to, per request |
 | `--crs`      | `off`                   | OWASP Core Rule Set: `block`, `detect` (log only) or `off` |
 | `--crs-paranoia` | `1`                 | CRS paranoia level, 1-4 |
 | `--crs-conf` | `off`                   | Absolute path of extra CRS directives (tuning, exclusions) |

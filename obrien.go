@@ -47,7 +47,8 @@ type Obrien struct {
 
 	TrustedProxies string `default:"off" help:"Comma-separated IPs/CIDRs whose X-Forwarded-For is kept, or off"`
 
-	RequestLog int `default:"1000" help:"Recent requests kept in memory, or 0"`
+	RequestLog int    `default:"1000" help:"Recent requests kept in memory, or 0"`
+	TraceLog   string `default:"off"  help:"Absolute path of a file to append a line per request to, with its trace, or off"`
 
 	ks            *kettlingar.KettlingarService
 	servers       []*http.Server
@@ -55,6 +56,7 @@ type Obrien struct {
 	upstreamHttps *url.URL
 	hooks         []monitor.Hook
 	log           *monitor.Log
+	traceFile     *os.File
 	httpLn        net.Listener
 	httpsLn       net.Listener
 	patterns      *rules.Patterns
@@ -122,6 +124,18 @@ func (p *Obrien) ServiceStartup(ks *kettlingar.KettlingarService) error {
 	if p.RequestLog > 0 {
 		p.log = monitor.NewLog(p.RequestLog)
 		p.hooks = append(p.hooks, p.log)
+	}
+	if p.TraceLog != off {
+		// The daemon's working directory is not the caller's.
+		if !filepath.IsAbs(p.TraceLog) {
+			return fmt.Errorf("--trace-log %q must be an absolute path", p.TraceLog)
+		}
+		f, err := os.OpenFile(p.TraceLog, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o640)
+		if err != nil {
+			return fmt.Errorf("--trace-log: %w", err)
+		}
+		p.traceFile = f
+		p.hooks = append(p.hooks, monitor.NewTraceLog(f))
 	}
 
 	p.patterns = rules.NewPatterns(p.patternMatched)
@@ -241,15 +255,18 @@ func (p *Obrien) ServiceShutdown(ks *kettlingar.KettlingarService) error {
 	if p.crs != nil {
 		_ = p.crs.Close()
 	}
+	if p.traceFile != nil {
+		_ = p.traceFile.Close()
+	}
 	return nil
 }
 
-// annotator traces each request for the request log; without a log there
-// is nothing to trace for. Only requests answered with 2xx or 3xx are
+// annotator traces each request for the request log and trace log; without
+// either there is nothing to trace for. Only requests answered with 2xx or 3xx are
 // traced: traces map the site's legitimate traffic, so errors, and requests
 // the rules blocked (--blocked-status is always 4xx or 5xx), are left out.
 func (p *Obrien) annotator() monitor.Annotator {
-	if p.log == nil {
+	if p.log == nil && p.traceFile == nil {
 		return nil
 	}
 	return func(r *http.Request) (*http.Request, func(*monitor.Record)) {

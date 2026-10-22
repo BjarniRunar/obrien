@@ -2,7 +2,8 @@
 
 Request traces: each request reduced to a line of tokens describing its
 shape (path, query, selected headers, body structure) without its exact
-content. Traces are shown in the request log (`obrien requests`) for
+content. Traces are shown in the request log (`obrien requests`) and the
+`--trace-log` file for
 requests answered with a 2xx or 3xx status, and are
 meant to be analysed later into patterns describing a site's expected
 traffic. Background: [`../issues/request-fingerprinting.md`](../issues/request-fingerprinting.md).

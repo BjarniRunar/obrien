@@ -63,18 +63,18 @@ without restarting it. Using the bound listeners means the firewall can only
 point at ports something is really listening on.
 
 **How:** the daemon runs `sudo -n nft -f -`. All rules live in one nftables
-table, `inet obrien` (IPv4 and IPv6), which is replaced or deleted
-atomically, so obrien never edits rules it does not own. Incoming traffic is
-redirected in the `prerouting` hook. Every rule matches only connections
-addressed to this host (`fib daddr type local`): prerouting also sees traffic
-routed through the host, such as containers or VMs connecting out to port
-443, and that must never be redirected. With `--local true`, connections made
-on the host are also redirected in the `output` hook. When either
-listener's upstream is on a redirected port, packets from the daemon's uid
-to that port are exempt there, because otherwise obrien's connections to a local upstream would be
-redirected back into obrien. The uid is the only way the rule can tell those
-apart, and it also exempts clients running as that user, so the exemption is
-added only when it is needed.
+table, `inet obrien` (IPv4 and IPv6), which is replaced or deleted atomically,
+so obrien never edits rules it does not own. Incoming traffic is redirected in
+the `prerouting` hook. Every rule matches only connections addressed to this
+host (`fib daddr type local`): prerouting also sees traffic routed through the
+host, such as containers or VMs connecting out to port 443, and that must never
+be redirected. With `--local true`, connections made on the host are also
+redirected in the `output` hook. When either listener's upstream is on a
+redirected port, packets from the daemon's uid to that port are exempt there,
+because otherwise obrien's connections to a local upstream would be redirected
+back into obrien. The uid is the only way the rule can tell those apart, and it
+also exempts clients running as that user, so the exemption is added only when
+it is needed.
 
 ## 5. Monitoring through hooks
 
@@ -219,12 +219,12 @@ is collected. The syntax is designed to be turned into readable regular
 expressions.
 
 **How:** the body is tokenized while the proxy streams it to the upstream,
-through a wrapper on `Request.Body`, so bodies are never buffered and there
-is no size limit. The rest of the trace comes from the raw header the rules
-judged (#7), which `rules.Filter` hands back to the monitor middleware
-through a slot in the request context. A body that is never read, such as
-a rejected request's, is not traced. Traces are only built when the
-request log is on.
+through a wrapper on `Request.Body`, so bodies are never buffered and there is
+no size limit. The rest of the trace comes from the raw header the rules judged
+(#7), which `rules.Filter` hands back to the monitor middleware through a slot
+in the request context. A body that is never read, such as a rejected
+request's, is not traced. Traces are only built when the request log or the
+trace log (#13) is on.
 
 Only requests answered with a 2xx or 3xx status get a trace. The goal is a
 map of legitimate requests, and a 404, a 503 or a request the rules blocked
@@ -232,3 +232,20 @@ says nothing about what the site serves. Redirects are kept because normal
 use produces them (a form POST answered with 302, a revalidated page with
 304). The request log still lists every request; the others just have no
 trace.
+
+## 13. Traces are also written to a plain-text log file
+
+`--trace-log PATH` appends one line per request to a file: a Common Log
+Format line (without a byte count) followed by the host and the trace.
+Requests without a trace end in `NOTRACE` instead.
+
+**Why:** the in-memory request log (#5) is bounded and lost on restart,
+while mapping a site's traffic needs traces collected over a long time.
+An access-log shape is familiar and works with existing line tools; keeping
+untraced requests, marked so `grep -v NOTRACE` drops them, keeps the file a
+complete record of traffic.
+
+**How:** it is another monitor hook, writing each line under a mutex with
+`O_APPEND`, unbuffered so lines are never lost or split on a crash. It is
+off by default. Tracing runs whenever either the request log or the trace
+log is on.
