@@ -1,268 +1,195 @@
 # Architecture decisions
 
-Brief records of high-level design decisions in `obrien`. Newest last.
+High-level design decisions in `obrien`. Newest last.
 
-## 1. Use kettlingar-go for the daemon scaffolding
+## 1. kettlingar-go for daemon scaffolding
 
-`obrien` is built on [kettlingar-go](https://github.com/mailpile/kettlingar-go),
-which supplies process management (`obrien start`/`stop`), configuration
-(flags, `OBRIEN_*` environment variables, `obrien.yaml`), metrics
-(`obrien metrics`, OpenMetrics), logging, and a CLI that talks to the running
-daemon over a local, authenticated RPC interface.
+[kettlingar-go](https://github.com/mailpile/kettlingar-go) supplies process
+management (`start`/`stop`), configuration (flags, `OBRIEN_*`,
+`obrien.yaml`), metrics, logging, and a CLI talking to the daemon over
+local authenticated RPC.
 
-**Why:** these are needed by any long-running service and are not what this
-project is about. kettlingar provides them in one place and makes it easy to
-add new CLI commands as RPC methods on the daemon.
+**Why:** generic service plumbing, not this project's subject.
 
-**How:** kettlingar is a git submodule in `submodules/kettlingar-go`, and a
-`replace` directive in `go.mod` builds against that checkout, so changes to
-kettlingar can be made and tested locally alongside `obrien`.
+**How:** git submodule in `submodules/kettlingar-go`, used via `replace` in
+`go.mod` so it can be changed alongside obrien.
 
 ## 2. Proxy design
 
-`obrien` is a security tool, not a load balancer: it forwards to a single
-upstream service (one address per listener, see #6) so it can monitor and
-filter the traffic sent there.
+A security tool, not a load balancer: one upstream per listener (#6), so
+its traffic can be monitored and filtered.
 
-- **Built on the standard library.** `net/http` and `httputil.ReverseProxy`
-  handle HTTP/1.1, HTTP/2 and TLS, keeping the dependency surface small.
-- **Listeners.** Cleartext HTTP and TLS termination can run together; each is
-  its own `http.Server` sharing one request pipeline. TLS is 1.2+ and offers
-  HTTP/2. Both have default addresses (`:9080`, `:9443`), and the TLS
-  listener starts whenever a certificate and key are configured, so
-  enabling HTTPS takes only `--cert` and `--key`.
-- **Fail at start, not later.** Listeners are bound and certificates loaded in
-  kettlingar's `ServiceStartup` hook, which runs before `obrien start` reports
-  success, so a bad address or certificate fails the start command.
-- **Request pipeline:** `monitor.Middleware` (hooks, in `monitor/`) → `rules.Filter`
-  (inspection, in `rules/`) → `proxy.New` (forwarding, in `proxy/`). Deciding
-  what traffic may pass is kept separate from moving it.
-- **Performance.** Pooled keep-alive upstream connections, reused copy
-  buffers, immediate flushing for streaming responses, and timeouts on both
-  the client and upstream sides.
-- **Transparency.** The client's `Host` header is forwarded unchanged, and
-  `X-Forwarded-For`/`-Host`/`-Proto` are set.
+- **Standard library:** `net/http` and `httputil.ReverseProxy` for
+  HTTP/1.1, HTTP/2 and TLS; minimal dependencies.
+- **Listeners:** cleartext and TLS can run together, each an `http.Server`
+  on one pipeline. TLS 1.2+, offers HTTP/2. Defaults `:9080`/`:9443`; TLS
+  starts whenever a certificate and key are set.
+- **Fail at start:** listeners and certificates are set up in
+  `ServiceStartup`, before `obrien start` reports success.
+- **Pipeline:** `monitor.Middleware` → `rules.Filter` → `proxy.New`;
+  deciding what passes is separate from moving it.
+- **Performance:** pooled keep-alive upstream connections, reused buffers,
+  immediate flushing, client and upstream timeouts.
+- **Transparency:** `Host` forwarded unchanged; `X-Forwarded-*` set.
 
 ## 3. The CLI only remote-controls the daemon
 
-Every `obrien` command other than kettlingar's own `start`/`stop` is an RPC
-method on the running daemon. Nothing is handled locally in the CLI process.
+Every command besides kettlingar's `start`/`stop` is a daemon RPC.
 
-**Why:** the daemon is the one source of truth for its state (bound
-listeners, loaded settings). A local command would have to guess that state
-from flags and config, and could get it wrong or act while the daemon is down.
+**Why:** the daemon is the source of truth for its state; a local command
+would guess from flags and config, and could act while the daemon is down.
 
 ## 4. Standard ports via firewall redirect
 
-obrien listens on unprivileged ports, and the `firewall-on` RPC method
-installs nftables rules that redirect incoming TCP 80/443 to the ports the
-daemon actually bound (`firewall-off` undoes it).
+obrien listens on unprivileged ports; `firewall-on` installs nftables rules
+redirecting TCP 80/443 to the bound ports, `firewall-off` removes them.
 
-**Why:** the proxy never needs root, and redirection can be turned on and off
-without restarting it. Using the bound listeners means the firewall can only
-point at ports something is really listening on.
+**Why:** no root for the proxy, toggling without restart, and redirects
+only point at ports really listening.
 
-**How:** the daemon runs `sudo -n nft -f -`. All rules live in one nftables
-table, `inet obrien` (IPv4 and IPv6), which is replaced or deleted atomically,
-so obrien never edits rules it does not own. Incoming traffic is redirected in
-the `prerouting` hook. Every rule matches only connections addressed to this
-host (`fib daddr type local`): prerouting also sees traffic routed through the
-host, such as containers or VMs connecting out to port 443, and that must never
-be redirected. With `--local true`, connections made on the host are also
-redirected in the `output` hook. When either listener's upstream is on a
-redirected port, packets from the daemon's uid to that port are exempt there,
-because otherwise obrien's connections to a local upstream would be redirected
-back into obrien. The uid is the only way the rule can tell those apart, and it
-also exempts clients running as that user, so the exemption is added only when
-it is needed.
+**How:** `sudo -n nft -f -`. Rules live in table `inet obrien`, replaced or
+deleted atomically, so obrien never edits rules it doesn't own. Redirection
+is in `prerouting`, only for traffic to this host (`fib daddr type local`),
+never routed traffic (containers, VMs). `--local true` also redirects in
+`output`. If an upstream is on a redirected port, the daemon's uid is
+exempt there to avoid loops; uid is the only distinguishing mark and also
+exempts other processes of that user, so it is added only when needed.
 
 ## 5. Monitoring through hooks
 
-`monitor.Middleware` summarises each request after its response as a
-`Record` and passes it to a list of `Hook`s. Metrics and the request log are
-both hooks.
+`monitor.Middleware` summarises each request as a `Record` and passes it to
+`Hook`s; metrics and the request log are hooks.
 
-**Why:** new kinds of monitoring (alerting, export, anomaly detection) can be
-added without touching the proxy or the rules, and none of them needs to
-know about HTTP handler wrapping.
+**Why:** new monitoring needs no changes to proxy or rules, and no handler
+wrapping.
 
-**How:** hooks run synchronously after the response, so they don't delay
-it, but they do hold the request's goroutine and must be fast. The request
-log is a fixed-size ring buffer (`--request-log`, default 1000), so memory
-use is bounded however much traffic passes, and old entries are simply
-overwritten. It lives only in memory and is lost on restart.
+**How:** hooks run synchronously after the response, so they must be fast.
+The request log is a fixed-size in-memory ring (`--request-log`, default
+1000), bounded and lost on restart.
 
-## 6. Re-encrypting to the upstream web server
+## 6. Re-encrypting to the upstream
 
-Each listener has its own upstream: the cleartext listener forwards to
-`--upstream` (default `http://127.0.0.1:80`) and the TLS listener to
-`--upstream-https` (default `https://127.0.0.1:443`). The defaults assume
-obrien sits in front of a web server on the same host, whose ports the
-firewall redirect intercepts (#4).
+The cleartext listener forwards to `--upstream` (`http://127.0.0.1:80`),
+the TLS listener to `--upstream-https` (`https://127.0.0.1:443`): a web
+server on the same host, behind the redirect (#4).
 
-**Why:** the web server keeps serving its own ports and certificates
-unchanged, and obrien can inspect HTTPS traffic because it terminates TLS
-itself.
+**Why:** the web server keeps its ports and certificates; obrien inspects
+HTTPS by terminating TLS.
 
-**How:** obrien dials the upstream address, but uses the client's SNI (or
-`Host`) as the TLS server name and verifies the web server's certificate
-against it. That name is put in the outgoing URL, so the transport's
-connection pool is keyed on it, and a connection verified for one name is
-never reused for another. Requests without a host name, or for a name the
-web server's certificate doesn't cover, fail with 502.
+**How:** obrien dials the upstream address but uses the client's SNI (or
+`Host`) as TLS server name and verifies against it. That name is in the
+outgoing URL, so pooled connections are keyed on it and never reused across
+names. No name, or one the certificate doesn't cover: 502.
 
-Re-encryption is the default, but an `http://` `--upstream-https` forwards
-TLS requests in cleartext (with `X-Forwarded-Proto: https`) to save the
-second TLS session's CPU where the local hop is trusted. This uses the
-existing setting rather than adding a flag, because the URL scheme already
-says how to talk to the upstream.
+An `http://` `--upstream-https` forwards in cleartext (with
+`X-Forwarded-Proto: https`) to save CPU on a trusted hop; the URL scheme
+already says how, so no extra flag.
 
-## 7. Rules judge the raw header, and obrien parses it itself
+## 7. Rules judge the raw header, parsed by obrien
 
-Requests are filtered on the header bytes the client actually sent, not on
-net/http's parsed view of them. Every request first passes a strict sanity
-check: anything that fails to parse, or has ambiguous framing, is rejected.
-Then a named, runtime-editable list of regular expressions is matched
-against the raw header.
+Requests are filtered on the header bytes sent, not net/http's view. A
+strict sanity check rejects anything unparseable or ambiguously framed;
+then a named, runtime-editable list of regexes is matched.
 
-**Why:** an attack that relies on how a server parses a request is best
-caught before parsing smooths it over: net/http canonicalises names,
-merges and reorders fields, and tolerates some malformed input that the
-upstream may read differently. Rejecting anything unparseable means a rule
-can't be dodged by malformed syntax that the upstream reads differently.
-Regular expressions are a quick way to answer a new advisory without
-rebuilding obrien.
+**Why:** parser-differential attacks are best caught before net/http
+canonicalises, merges, reorders or tolerates malformed input. Rejecting the
+unparseable stops rules being dodged by odd syntax. Regexes answer new
+advisories without a rebuild.
 
-**How:** `rules.Listen` wraps each connection and follows its HTTP/1.x
-framing itself to capture each header. Filter checks every captured header
-against the request net/http produced, so if the two parsers ever disagree
-about where a request starts, the request is rejected instead of being judged
-on the wrong bytes. Since net/http only serves HTTP/2 and sets `Request.TLS`
-for a bare `*tls.Conn`, `rules.Listen` also terminates TLS: HTTP/2
-connections go through unwrapped and their headers are rebuilt from the
-decoded request, which has no raw form. Patterns live in memory only and
-are managed with the `rules-*` commands (#3), using `rules-list -f json`
-output as the file format for `rules-add --file`.
+**How:** `rules.Listen` follows HTTP/1.x framing itself to capture each
+header; Filter checks it against net/http's request and rejects on
+disagreement. Since net/http only serves HTTP/2 and sets `Request.TLS` on a
+bare `*tls.Conn`, `rules.Listen` also terminates TLS; HTTP/2 passes
+unwrapped and its header is rebuilt. Patterns are memory-only, managed by
+`rules-*` (#3); `rules-list -f json` is the `rules-add --file` format.
 
-## 8. Statically linked binaries
+## 8. Static binaries
 
-The Makefile builds with cgo disabled, so `obrien` is a single statically
-linked binary.
+Built with cgo disabled.
 
-**Why:** it can be copied onto older machines without depending on their
-libc version. obrien needs nothing from cgo: DNS and user lookups fall back
-to Go's own implementations.
+**Why:** runs on old machines regardless of libc; DNS and user lookups fall
+back to Go's own.
 
 ## 9. Blocked requests link to an explanation
 
-A request rejected by the rules gets an error status (`--blocked-status`,
-default 502) with a minimal HTML page linking to a page that explains the
-block. Each pattern may name its own URL, and `--blocked-url` is the default;
-the rejection reason itself is still never sent to the client.
+Rejections get `--blocked-status` (502) and a minimal HTML page linking to
+the rule's URL or `--blocked-url`. The reason is never sent.
 
-**Why:** legitimate users caught by a rule need somewhere to learn why and
-what to do.
+**Why:** legitimate users need to learn why and what to do.
 
-**How:** rules return a `rules.Rejection` error carrying the URL. URLs are
-limited to http(s) or absolute paths and HTML-escaped, so a rule cannot
-inject script into the page.
+**How:** `rules.Rejection` carries the URL. URLs are http(s) or absolute
+paths, HTML-escaped, so rules cannot inject script.
 
-## 10. X-Forwarded-For is only trusted from listed proxies
+## 10. X-Forwarded-For trusted only from listed proxies
 
-By default obrien replaces any `X-Forwarded-For` a client sends with the
-client's own address. `--trusted-proxies` lists addresses (IPs or CIDRs)
-whose `X-Forwarded-For` is kept, with their own address appended.
+A client's `X-Forwarded-For` is replaced by its address unless it is in
+`--trusted-proxies`, whose chains are kept with their address appended.
 
-**Why:** a client can put anything in that header, so trusting it by default
-would let anyone spoof their address to the upstream. When obrien sits behind
-another proxy, though, the upstream needs the real client's address, and the
-operator knows which peers are proxies.
+**Why:** the header is trivially spoofed, but behind another proxy the
+upstream needs the real client.
 
-**How:** only the directly connecting peer is checked; the chain it sends is
-passed on as given. Only `X-Forwarded-For` is kept: `X-Forwarded-Host` and
-`-Proto` always describe obrien's own listener.
+**How:** only the direct peer is checked. `X-Forwarded-Host`/`-Proto`
+always describe obrien's listener.
 
 ## 11. OWASP Core Rule Set through Coraza
 
-`--crs block` (or `detect`) adds a rule that runs the OWASP Core Rule Set
-with [Coraza](https://github.com/corazawaf/coraza), after the sanity check
-and the header patterns.
+`--crs block|detect` adds a rule running the CRS with
+[Coraza](https://github.com/corazawaf/coraza), after sanity and patterns.
 
-**Why:** the CRS is a broad, maintained set of generic attack signatures
-(SQL injection, XSS, path traversal, scanners, …) that obrien's own
-patterns could never match in coverage. Coraza is a pure-Go engine for it,
-so the binary stays static (#8).
+**Why:** broad, maintained attack signatures obrien's patterns can't match;
+Coraza is pure Go, keeping the binary static (#8).
 
-**How:** Coraza is a git submodule built through a `replace` directive, like
-kettlingar (#1), so it can be patched locally. The rule set is compiled
-into the binary from the `coraza-coreruleset` module, so there are no rule
-files to install. This is an exception to #7: the CRS judges the request
-as net/http parsed it, because its rules are written against parsed
-variables, but it only runs on requests that have already passed the raw
-header sanity check. The CRS reads up to 1 MiB of the request body, which
-is buffered in memory and handed on to the upstream unchanged; larger
-bodies are inspected only up to that point, so uploads are not refused.
-Only requests are inspected, never responses. Coraza's engine always runs
-in blocking mode, and obrien decides whether an interruption blocks or is
-only logged, so detect mode reports exactly what block mode would reject.
+**How:** Coraza is a submodule with `replace` (#1); the CRS is embedded
+from `coraza-coreruleset`. Exception to #7: it judges the parsed request,
+but only after the raw sanity check. Up to 1 MiB of body is buffered,
+inspected and passed on unchanged; larger bodies are inspected in part,
+not refused. Responses aren't inspected. Coraza always blocks internally;
+obrien decides whether to block or log, so detect reports exactly what
+block would reject.
 
 ## 12. Request traces, tokenized as a stream
 
-Each request in the request log carries a trace: a line of tokens giving
-its shape (path, query, selected headers, body structure) without its
-content. The syntax is in [`trace/README.md`](trace/README.md).
+Requests carry a trace: tokens giving their shape (path, query, selected
+headers, body structure), not content. Syntax:
+[`trace/README.md`](trace/README.md).
 
-**Why:** the aim is to map a site's expected traffic from what it receives.
-Logging traces first, and deriving patterns from them later, keeps the
-analysis out of the request path and lets it change without changing what
-is collected. The syntax is designed to be turned into readable regular
-expressions.
+**Why:** to map a site's expected traffic. Collecting traces and deriving
+patterns later keeps analysis out of the request path. The syntax is
+designed to become readable regexes.
 
-**How:** the body is tokenized while the proxy streams it to the upstream,
-through a wrapper on `Request.Body`, so bodies are never buffered. The rest
-of the trace comes from the raw header the rules judged (#7), which `rules.Filter` hands back to the monitor middleware through a slot
-in the request context. A body that is never read, such as a rejected
-request's, is not traced. Traces are only built when the request log or the
-trace log (#13) is on.
+**How:** the body is tokenized as the proxy streams it, via a
+`Request.Body` wrapper, never buffered whole. The rest comes from the raw
+header the rules judged (#7), passed back via a request-context slot.
+Unread bodies (e.g. rejected requests) aren't traced. Traces are built only
+when the request log or trace log (#13) is on.
 
-Bodies are traced as files: a whole body, or each multipart part. JSON
-and XML files, which is what API calls carry, are parsed from their first
-20 KiB, and anything left open by a file cut short there (or by the body
-ending) is closed so the start of the file is still traced; `TRUNC` says
-it was cut. JSON object keys are sorted, so clients that order keys
-differently give the same trace, but lists keep their order, which usually
-means something. Files are sniffed rather than trusted to their media
-type, since API clients often mislabel them. Other files are only
-summarised by sniffed type and a coarse size bucket. Only the first 16
-multipart parts and the first 64 form or query pairs are traced, with
-`MORE` standing for the rest, so the number of parts or pairs cannot make
-a trace grow without bound. Likewise a value gives at most 10 word
-tokens, then one `REST-` token giving the class and a coarse size of the
-rest, so a long value still says what it held without making the trace
-long. Beyond the first 512 bytes of a file, kept to sniff its type, contents
-are never kept: only the current file's tokens are held until it ends, bounded by the 20 KiB they come from, since keys cannot be
-sorted before an object is complete.
+Bodies are traced as files: the whole body, or each multipart part.
 
-Only requests answered with a 2xx or 3xx status get a trace. The goal is a
-map of legitimate requests, and a 404, a 503 or a request the rules blocked
-says nothing about what the site serves. Redirects are kept because normal
-use produces them (a form POST answered with 302, a revalidated page with
-304). The request log still lists every request; the others just have no
-trace.
+- JSON and XML (what APIs carry) are parsed from their first 20 KiB; a file
+  cut short is repaired by closing what is open, and marked `TRUNC`.
+- JSON keys are sorted so key order doesn't change traces; lists keep
+  order, which usually matters.
+- Types are sniffed, since API clients mislabel them.
+- Other files: sniffed type and a coarse size only.
+- Caps: 16 multipart parts, 64 form or query pairs, 10 words per value,
+  each followed by `MORE` or `REST-`, so a trace is bounded.
+- Only the first 512 bytes of a file (for sniffing) and the current file's
+  tokens are held; keys can't be sorted before an object ends.
 
-## 13. Traces are also written to a plain-text log file
+Only 2xx/3xx responses get a trace: the goal is a map of legitimate
+requests, and errors or blocks say nothing about what the site serves.
+Redirects count as normal use (POST then 302, 304 revalidation). The log
+still lists every request.
 
-`--trace-log PATH` appends one line per request to a file: a Common Log
-Format line (without a byte count) followed by the host and the trace.
-Requests without a trace end in `NOTRACE` instead.
+## 13. Traces also go to a plain-text log
 
-**Why:** the in-memory request log (#5) is bounded and lost on restart,
-while mapping a site's traffic needs traces collected over a long time.
-An access-log shape is familiar and works with existing line tools; keeping
-untraced requests, marked so `grep -v NOTRACE` drops them, keeps the file a
-complete record of traffic.
+`--trace-log PATH` appends one line per request: a Common Log Format line
+(no byte count), host and trace, or `NOTRACE`.
 
-**How:** it is another monitor hook, writing each line under a mutex with
-`O_APPEND`, unbuffered so lines are never lost or split on a crash. It is
-off by default. Tracing runs whenever either the request log or the trace
-log is on.
+**Why:** the request log (#5) is bounded and volatile; mapping traffic
+needs long collection. An access-log shape suits existing tools, and
+`NOTRACE` keeps the file complete while `grep -v NOTRACE` drops untraced
+lines.
+
+**How:** a monitor hook writing each line under a mutex with `O_APPEND`,
+unbuffered, so lines aren't lost or split on a crash. Off by default.

@@ -1,23 +1,19 @@
 # proxy/
 
-Everything needed to move HTTP traffic from clients to the upstream, and
-nothing that decides *whether* it should. Traffic inspection and filtering
-live in [`../rules`](../rules/README.md).
+Moves traffic to the upstream; never decides whether it may pass (that is
+[`../rules`](../rules/README.md)).
 
-- `proxy.go`: `New` builds the reverse proxy (pooled upstream connections,
-  immediate flushing for streaming, `Host` preserved, `X-Forwarded-*` set,
-  keeping a client's own `X-Forwarded-For` only if it is a trusted proxy
-  (`ParseTrusted` reads the list),
-  502 plus an `ErrorFunc` callback when the upstream fails). It always dials
-  the target address; for an `https` target the TLS connection uses the
-  client's SNI or `Host` as the server name and verifies the upstream's
-  certificate against it. `NewServer`
-  builds an `http.Server` with timeouts for untrusted clients.
-- `proxy_test.go`: tests for trusted `X-Forwarded-For` handling.
-- `bufpool.go`: reuses 32 KB copy buffers to cut allocations.
-- `statuswriter.go`: `StatusWriter` records the response status for
-  monitoring, without hiding `Flush` from the proxy.
+- `proxy.go`: `New` builds the reverse proxy: pooled upstream connections,
+  immediate flushing, `Host` kept, `X-Forwarded-*` set (a client's own
+  `X-Forwarded-For` kept only from trusted proxies, parsed by
+  `ParseTrusted`), 502 and an `ErrorFunc` call on upstream failure. Always
+  dials the target address; for `https` targets, TLS uses the client's SNI
+  or `Host` as server name and verifies against it. `NewServer` builds an
+  `http.Server` with timeouts for untrusted clients.
+- `proxy_test.go`: trusted `X-Forwarded-For` tests.
+- `bufpool.go`: pooled 32 KB copy buffers.
+- `statuswriter.go`: `StatusWriter` records the status without hiding
+  `Flush`.
 
-Listener setup is done by the daemon in `../obrien.go`, and TLS is
-terminated by `rules.Listen`, which captures raw headers for inspection; the
-servers built here are handed those listeners.
+Listeners are set up in `../obrien.go`; TLS is terminated by
+`rules.Listen`.

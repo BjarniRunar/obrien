@@ -3,6 +3,7 @@
 ## Rules
 
 - Keep all text, comments, documents and interactions brief and to the point.
+  Assume a competent, educated reader.
 
 - Every folder with Go code has a `README.md` describing its purpose and
   contents. Keep these up to date with every change.
