@@ -11,7 +11,7 @@
 - Maintain `ARCH-DECISIONS.md` in the project root. When a change makes or
   changes a high-level design decision, add or update a brief entry there
   describing the decision and why it was made. Always read this file in full
-  on startup.
+  on startup. If you don't know why a decision was made, don't guess: ask.
 
 - Every CLI command is an RPC method on the daemon (`Api*`/`PublicApi*`).
   The CLI only remote-controls the background service; never add commands

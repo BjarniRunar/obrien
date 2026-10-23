@@ -44,8 +44,8 @@ would guess from flags and config, and could act while the daemon is down.
 obrien listens on unprivileged ports; `firewall-on` installs nftables rules
 redirecting TCP 80/443 to the bound ports, `firewall-off` removes them.
 
-**Why:** no root for the proxy, toggling without restart, and redirects
-only point at ports really listening.
+**Why:** no root for the proxy, toggling without restart, doesn't impact
+or rely on the host configuration in any way.
 
 **How:** `sudo -n nft -f -`. Rules live in table `inet obrien`, replaced or
 deleted atomically, so obrien never edits rules it doesn't own. Redirection
@@ -75,8 +75,8 @@ The cleartext listener forwards to `--upstream` (`http://127.0.0.1:80`),
 the TLS listener to `--upstream-https` (`https://127.0.0.1:443`): a web
 server on the same host, behind the redirect (#4).
 
-**Why:** the web server keeps its ports and certificates; obrien inspects
-HTTPS by terminating TLS.
+**Why:** the source web server keeps its ports and certificates; obrien
+inspects HTTPS by terminating TLS.
 
 **How:** obrien dials the upstream address but uses the client's SNI (or
 `Host`) as TLS server name and verifies against it. That name is in the
@@ -93,10 +93,9 @@ Requests are filtered on the header bytes sent, not net/http's view. A
 strict sanity check rejects anything unparseable or ambiguously framed;
 then a named, runtime-editable list of regexes is matched.
 
-**Why:** parser-differential attacks are best caught before net/http
-canonicalises, merges, reorders or tolerates malformed input. Rejecting the
-unparseable stops rules being dodged by odd syntax. Regexes answer new
-advisories without a rebuild.
+**Why:** The sanity check (using the go http parser) protects against
+generic shenanigans. The regexes can be added/removed at runtime and
+can see the whole header at once, for speed/simplicity.
 
 **How:** `rules.Listen` follows HTTP/1.x framing itself to capture each
 header; Filter checks it against net/http's request and rejects on
@@ -117,7 +116,8 @@ back to Go's own.
 Rejections get `--blocked-status` (502) and a minimal HTML page linking to
 the rule's URL or `--blocked-url`. The reason is never sent.
 
-**Why:** legitimate users need to learn why and what to do.
+**Why:** If we start blocking things, we owe legit users an explanation
+when we make a mistake.
 
 **How:** `rules.Rejection` carries the URL. URLs are http(s) or absolute
 paths, HTML-escaped, so rules cannot inject script.
@@ -156,8 +156,7 @@ headers, body structure), not content. Syntax:
 [`trace/README.md`](trace/README.md).
 
 **Why:** to map a site's expected traffic. Collecting traces and deriving
-patterns later keeps analysis out of the request path. The syntax is
-designed to become readable regexes.
+patterns later keeps analysis out of the request path.
 
 **How:** the body is tokenized as the proxy streams it, via a
 `Request.Body` wrapper, never buffered whole. The rest comes from the raw
