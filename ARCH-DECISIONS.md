@@ -193,3 +193,15 @@ lines.
 
 **How:** a monitor hook writing each line under a mutex with `O_APPEND`,
 unbuffered, so lines aren't lost or split on a crash. Off by default.
+
+## 14. TLS key pair reloads itself
+
+The cert and key are re-read when their mtime or size changes, checked at
+most once a minute, from `tls.Config.GetCertificate`.
+
+**Why:** renewals (e.g. Let's Encrypt) shouldn't need a restart, and
+handshakes shouldn't each hit the filesystem.
+
+**How:** one handshake per interval stats both files; others use the cached
+pair. A failed load (e.g. cert and key mid-replacement) keeps the old pair
+and retries at the next check. No checks happen without traffic.

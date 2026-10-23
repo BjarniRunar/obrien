@@ -27,6 +27,7 @@ upstream. A security tool, not a load balancer.
 - `firewall.go`: `firewall-*` RPCs (nftables redirect of 80/443).
 - `requests.go`: `requests` RPC (the request log).
 - `rules_api.go`: `rules-*` RPCs (header patterns).
+- `certs.go`: TLS key pair, reloaded when its files change.
 - `annotator_test.go`: only 2xx/3xx requests get traces.
 - [`proxy/`](proxy/README.md): forwarding.
 - [`monitor/`](monitor/README.md): hooks and the request log.
@@ -74,7 +75,7 @@ daemon up lists every command.
 | `--upstream-https` | `https://127.0.0.1:443` | TLS listener's upstream; `http://` forwards cleartext |
 | `--http`     | `:9080`                 | Cleartext address, or `off` |
 | `--https`    | `:9443`                 | TLS address, or `off`; needs `--cert` and `--key` |
-| `--cert`     | `off`                   | TLS certificate (PEM) |
+| `--cert`     | `off`                   | TLS certificate (PEM); changes picked up within a minute |
 | `--key`      | `off`                   | TLS private key (PEM) |
 | `--request-log` | `1000`               | Requests kept in memory; `0` disables |
 | `--trace-log`   | `off`                | Absolute path of the trace log file |

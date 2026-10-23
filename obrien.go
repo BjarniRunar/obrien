@@ -155,7 +155,7 @@ func (p *Obrien) ServiceStartup(ks *kettlingar.KettlingarService) error {
 		p.serve("http", srv, ln, nil)
 	}
 	if https != off {
-		cert, err := tls.LoadX509KeyPair(p.Cert, p.Key)
+		kp, err := newKeyPair(p.Cert, p.Key)
 		if err != nil {
 			return fmt.Errorf("load TLS keypair: %w", err)
 		}
@@ -166,9 +166,9 @@ func (p *Obrien) ServiceStartup(ks *kettlingar.KettlingarService) error {
 		p.httpsLn = ln
 		srv := proxy.NewServer(monitor.Middleware("https", p.hooks, p.annotator(), p.hooksTimed, p.pipeline(targetHttps)))
 		srv.TLSConfig = &tls.Config{
-			MinVersion:   tls.VersionTLS12,
-			NextProtos:   []string{"h2", "http/1.1"},
-			Certificates: []tls.Certificate{cert},
+			MinVersion:     tls.VersionTLS12,
+			NextProtos:     []string{"h2", "http/1.1"},
+			GetCertificate: kp.GetCertificate,
 		}
 		p.serve("https", srv, ln, srv.TLSConfig)
 	}
