@@ -262,9 +262,9 @@ func (p *Obrien) ServiceShutdown(ks *kettlingar.KettlingarService) error {
 }
 
 // annotator traces each request for the request log and trace log; without
-// either there is nothing to trace for. Only requests answered with 2xx or 3xx are
-// traced: traces map the site's legitimate traffic, so errors, and requests
-// the rules blocked (--blocked-status is always 4xx or 5xx), are left out.
+// either there is nothing to trace for. Only requests answered with 2xx, 3xx or
+// 4xx are traced, so requests the rules blocked are traced only when
+// --blocked-status is 4xx.
 func (p *Obrien) annotator() monitor.Annotator {
 	if p.log == nil && p.traceFile == nil {
 		return nil
@@ -278,7 +278,9 @@ func (p *Obrien) annotator() monitor.Annotator {
 			r.Body = body
 		}
 		return r, func(rec *monitor.Record) {
-			if rec.Status >= 200 && rec.Status < 400 {
+			rec.Blocked = slot.Blocked()
+			rec.Malformed = slot.Malformed()
+			if rec.Status >= 200 && rec.Status < 500 {
 				rec.Trace = trace.Of(slot.Header(), body)
 			}
 		}

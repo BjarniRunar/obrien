@@ -9,10 +9,11 @@ upstream. A security tool, not a load balancer.
 - Forwards allowed requests to one upstream per listener, re-encrypting
   TLS, keeping `Host`, setting `X-Forwarded-For`/`-Host`/`-Proto`.
 - Monitoring hooks: metrics and a bounded in-memory request log
-  (`obrien requests`). 2xx/3xx requests get a trace of their shape (path,
+  (`obrien requests`). 2xx/3xx/4xx requests get a trace of their shape (path,
   query, selected headers, body structure), not content. `--trace-log`
-  appends every request to a file as an access-log line with its trace or
-  `NOTRACE`.
+  appends every request to a file as the access-log line `obrien requests`
+  shows: trace or `NOTRACE`, preceded by `BLOCKED` if obrien rejected it
+  (`BLOCKED MALFORMED` if it failed the header sanity check).
 - A strict header sanity check (well-formed, unambiguous framing).
 - Runtime-editable named regexes on the raw header (`rules-add`,
   `rules-rm`, `rules-list`).
@@ -28,7 +29,7 @@ upstream. A security tool, not a load balancer.
 - `requests.go`: `requests` RPC (the request log).
 - `rules_api.go`: `rules-*` RPCs (header patterns).
 - `certs.go`: TLS key pair, reloaded when its files change.
-- `annotator_test.go`: only 2xx/3xx requests get traces.
+- `annotator_test.go`: only 2xx/3xx/4xx requests get traces; blocks are marked.
 - [`proxy/`](proxy/README.md): forwarding.
 - [`monitor/`](monitor/README.md): hooks and the request log.
 - [`rules/`](rules/README.md): inspection and filtering.

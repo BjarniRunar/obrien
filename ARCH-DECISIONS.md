@@ -65,7 +65,9 @@ wrapping.
 
 **How:** hooks run synchronously after the response, so they must be fast.
 The request log is a fixed-size in-memory ring (`--request-log`, default
-1000), bounded and lost on restart.
+1000), bounded and lost on restart. It stores the formatted trace log
+lines (#13), so `obrien requests` and `--trace-log` match exactly and one
+parser handles both.
 
 ## 6. Re-encrypting to the upstream
 
@@ -176,15 +178,18 @@ Bodies are traced as files: the whole body, or each multipart part.
 - Only the first 512 bytes of a file (for sniffing) and the current file's
   tokens are held; keys can't be sorted before an object ends.
 
-Only 2xx/3xx responses get a trace: the goal is a map of legitimate
-requests, and errors or blocks say nothing about what the site serves.
-Redirects count as normal use (POST then 302, 304 revalidation). The log
-still lists every request.
+Only 2xx/3xx/4xx responses get a trace. Redirects count as normal use (POST
+then 302, 304 revalidation); 4xx shows what clients ask for that the site
+rejects, including blocks when `--blocked-status` is 4xx. 5xx says nothing
+about the request, so is left out. The log still lists every request.
 
 ## 13. Traces also go to a plain-text log
 
 `--trace-log PATH` appends one line per request: a Common Log Format line
-(no byte count), host and trace, or `NOTRACE`.
+(no byte count), host and trace, or `NOTRACE`. Requests obrien rejected
+itself have `BLOCKED` before the trace, so their status isn't mistaken for
+the upstream's; `BLOCKED MALFORMED` if the header sanity check rejected
+them, separating broken clients and smuggling attempts from policy blocks.
 
 **Why:** the request log (#5) is bounded and volatile; mapping traffic
 needs long collection. An access-log shape suits existing tools, and

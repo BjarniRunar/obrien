@@ -1,9 +1,8 @@
 # trace/
 
 Reduces each request to a line of tokens giving its shape, not its content.
-Shown in `obrien requests` and the `--trace-log` file for 2xx/3xx
+Shown in `obrien requests` and the `--trace-log` file for 2xx/3xx/4xx
 responses; meant to be mined later for patterns of expected traffic.
-Background: [`../issues/request-fingerprinting.md`](../issues/request-fingerprinting.md).
 
 - `trace.go`: `Of` builds a trace from the `rules.Header` the rules judged
   and the `Body`.

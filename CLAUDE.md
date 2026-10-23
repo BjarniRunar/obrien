@@ -22,13 +22,16 @@
   Banned: restating the code.
   Banned: no history lessons. A comment describes the code as it stands.
 
+- Issues: Issues are recorded under `issues/` in markdown. These files are
+  transient and should not be referenced from documents or code comments.
+
 - Git: The operator is responsible for git commits. Don't try.
 
 - Environment: You are in a container. Do not try to inspect the live system.
 
-- Stay focused: Don't just incidentally fix things. Record issues under `issues/`
-  if you see a problem, but stay focused on the operator's request. Report what
-  issues were added at the end of a block of work.
+- Stay focused: Don't just incidentally fix things. Record issues if you see
+  a problem, but stay focused on the operator's request. Report what issues
+  were added at the end of a block of work.
 
 - Don't create documents or artifacts or code unless explicitly requested. A
   request for discussion is not a request for a document.

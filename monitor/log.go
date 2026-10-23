@@ -4,23 +4,25 @@ package monitor
 
 import "sync"
 
-// Log is a Hook keeping the most recent requests in a fixed-size ring
-// buffer, so memory use stays bounded however much traffic passes.
+// Log is a Hook keeping the most recent requests as TraceLog lines in a
+// fixed-size ring buffer, so memory use stays bounded however much traffic
+// passes.
 type Log struct {
 	mu   sync.Mutex
-	buf  []Record
+	buf  []string
 	next int
 	full bool
 }
 
-// NewLog returns a Log holding at most size records; size must be positive.
+// NewLog returns a Log holding at most size lines; size must be positive.
 func NewLog(size int) *Log {
-	return &Log{buf: make([]Record, size)}
+	return &Log{buf: make([]string, size)}
 }
 
 func (l *Log) Observe(rec *Record) {
+	line := FormatTraceLine(rec)
 	l.mu.Lock()
-	l.buf[l.next] = *rec
+	l.buf[l.next] = line
 	l.next++
 	if l.next == len(l.buf) {
 		l.next = 0
@@ -29,12 +31,12 @@ func (l *Log) Observe(rec *Record) {
 	l.mu.Unlock()
 }
 
-// Recent returns up to n of the newest records, oldest first. n <= 0 returns
-// all of them.
-func (l *Log) Recent(n int) []Record {
+// Recent returns up to n of the newest lines, oldest first, each ending in a
+// newline. n <= 0 returns all of them.
+func (l *Log) Recent(n int) []string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	var all []Record
+	var all []string
 	if l.full {
 		all = append(append(all, l.buf[l.next:]...), l.buf[:l.next]...)
 	} else {

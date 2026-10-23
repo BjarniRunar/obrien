@@ -19,7 +19,8 @@ Forwarding is in [`../proxy`](../proxy/README.md).
   requests on that connection rejected.
 - `header.go`: `Header` (raw bytes, request line, fields in wire order,
   parse error); `HeaderSlot` (`WithHeaderSlot`), handing the judged header
-  to outer code; `ParseHeader` (for tests elsewhere); the strict parser;
+  and whether Filter blocked the request, and if for being malformed, to
+  outer code; `ParseHeader` (for tests elsewhere); the strict parser;
   and `checkHeader`: CRLF only, no folding; valid method, target,
   protocol, names and values; at most one parseable `Content-Length`,
   `Transfer-Encoding`, `Content-Type` and `Host`; not both

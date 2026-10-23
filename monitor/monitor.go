@@ -22,6 +22,8 @@ type Record struct {
 	Proto      string        `msgpack:"proto" json:"proto"`
 	Status     int           `msgpack:"status" json:"status"`
 	Duration   time.Duration `msgpack:"duration" json:"duration"`
+	Blocked    bool          `msgpack:"blocked" json:"blocked,omitempty"`
+	Malformed  bool          `msgpack:"malformed" json:"malformed,omitempty"`
 	Trace      string        `msgpack:"trace" json:"trace,omitempty"`
 }
 

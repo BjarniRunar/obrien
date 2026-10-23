@@ -43,9 +43,14 @@ func withHeader(ctx context.Context, h *Header) context.Context {
 	return context.WithValue(ctx, headerKey{}, h)
 }
 
-// HeaderSlot receives the header Filter judged a request on, for code that
-// wraps Filter and so cannot see the context Filter attaches it to.
-type HeaderSlot struct{ h *Header }
+// HeaderSlot receives the header Filter judged a request on, and whether
+// Filter blocked it and why, for code that wraps Filter and so cannot see the context
+// Filter attaches it to.
+type HeaderSlot struct {
+	h         *Header
+	blocked   bool
+	malformed bool
+}
 
 type slotKey struct{}
 
@@ -59,6 +64,14 @@ func WithHeaderSlot(ctx context.Context) (context.Context, *HeaderSlot) {
 // Header returns the header Filter put in the slot, or nil if the request
 // did not reach Filter. It must not be called before Filter returns.
 func (s *HeaderSlot) Header() *Header { return s.h }
+
+// Blocked reports whether Filter answered the request itself, rejecting it.
+// It must not be called before Filter returns.
+func (s *HeaderSlot) Blocked() bool { return s.blocked }
+
+// Malformed reports whether the block was the Sanity rule's (a SanityError).
+// It must not be called before Filter returns.
+func (s *HeaderSlot) Malformed() bool { return s.malformed }
 
 // HeaderFrom returns the header Filter attached to the request's context, or
 // nil outside Filter.

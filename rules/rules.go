@@ -47,8 +47,9 @@ func Filter(rules []Rule, status int, infoURL string, onReject RejectFunc, onTim
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		h, tlsState := takeHeader(r)
-		if s, ok := r.Context().Value(slotKey{}).(*HeaderSlot); ok {
-			s.h = h
+		slot, _ := r.Context().Value(slotKey{}).(*HeaderSlot)
+		if slot != nil {
+			slot.h = h
 		}
 		r = r.WithContext(withHeader(r.Context(), h))
 		if r.TLS == nil {
@@ -66,6 +67,10 @@ func Filter(rules []Rule, status int, infoURL string, onReject RejectFunc, onTim
 				var rej Rejection
 				if errors.As(err, &rej) && rej.URL != "" {
 					link = rej.URL
+				}
+				if slot != nil {
+					slot.blocked = true
+					slot.malformed = errors.As(err, new(SanityError))
 				}
 				blocked(w, status, link)
 				return
