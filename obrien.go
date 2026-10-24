@@ -27,6 +27,9 @@ import (
 // with a non-empty default, so "off" stands in for "unset".
 const off = "off"
 
+// traceLogRotate is the bytes written to the trace log before it is rotated.
+const traceLogRotate = 20 << 20
+
 // Obrien is the kettlingar service. Fields tagged with `default` and `help`
 // are settings, configurable via "obrien start" flags, OBRIEN_* environment
 // variables or the obrien.yaml config file.
@@ -48,7 +51,7 @@ type Obrien struct {
 	TrustedProxies string `default:"off" help:"Comma-separated IPs/CIDRs whose X-Forwarded-For is kept, or off"`
 
 	RequestLog int    `default:"1000" help:"Recent requests kept in memory, or 0"`
-	TraceLog   string `default:"off"  help:"Absolute path of a file to append a line per request to, with its trace, or off"`
+	TraceLog   string `default:"off"  help:"Absolute path of a file to append a line per request to, with its trace, or off; rotated every 20 MB"`
 
 	ks            *kettlingar.KettlingarService
 	servers       []*http.Server
@@ -56,7 +59,7 @@ type Obrien struct {
 	upstreamHttps *url.URL
 	hooks         []monitor.Hook
 	log           *monitor.Log
-	traceFile     *os.File
+	traceFile     *monitor.RotatingFile
 	httpLn        net.Listener
 	httpsLn       net.Listener
 	patterns      *rules.Patterns
@@ -130,7 +133,7 @@ func (p *Obrien) ServiceStartup(ks *kettlingar.KettlingarService) error {
 		if !filepath.IsAbs(p.TraceLog) {
 			return fmt.Errorf("--trace-log %q must be an absolute path", p.TraceLog)
 		}
-		f, err := os.OpenFile(p.TraceLog, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o640)
+		f, err := monitor.OpenRotatingFile(p.TraceLog, traceLogRotate)
 		if err != nil {
 			return fmt.Errorf("--trace-log: %w", err)
 		}

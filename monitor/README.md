@@ -19,7 +19,9 @@ and passes it to hooks. Filtering is in [`../rules`](../rules/README.md).
   Format line (no byte count), host and trace, or `NOTRACE`; `BLOCKED`
   precedes either when `Record.Blocked` (obrien, not the upstream, rejected it),
   followed by `MALFORMED` when `Record.Malformed` (the sanity check did).
-- `log_test.go`, `tracelog_test.go`: tests.
+- `rotate.go`: `RotatingFile`, renamed to `PATH.YYYYMMDD-HHMMSS` and
+  reopened after a given number of bytes written; used for the trace log.
+- `log_test.go`, `tracelog_test.go`, `rotate_test.go`: tests.
 
 The daemon installs hooks for metrics (`proxy_requests_total`,
 `proxy_request_time_us`), a `Log` for `obrien requests` (unless

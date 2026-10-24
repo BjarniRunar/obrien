@@ -198,6 +198,10 @@ lines.
 **How:** a monitor hook writing each line under a mutex with `O_APPEND`,
 unbuffered, so lines aren't lost or split on a crash. Off by default.
 
+After 20 MB written, the file is renamed with a `.YYYYMMDD-HHMMSS` suffix
+and a new one opened; old files are never pruned, as collection should not
+silently lose data. Bytes already in the file at start don't count.
+
 ## 14. TLS key pair reloads itself
 
 The cert and key are re-read when their mtime or size changes, checked at

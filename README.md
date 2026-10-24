@@ -1,57 +1,42 @@
 # obrien
 
-A reverse HTTP proxy that **monitors and filters** requests to a single
-upstream. A security tool, not a load balancer.
+Obrien is a drop-in "web application firewall"; a reverse HTTP proxy that
+monitors and optionally blocks requests to a single upstream web server. 
 
 ## Features
 
-- Cleartext HTTP and/or TLS termination (HTTP/1.1, HTTP/2).
-- Forwards allowed requests to one upstream per listener, re-encrypting
-  TLS, keeping `Host`, setting `X-Forwarded-For`/`-Host`/`-Proto`.
-- Monitoring hooks: metrics and a bounded in-memory request log
-  (`obrien requests`). 2xx/3xx/4xx requests get a trace of their shape (path,
-  query, selected headers, body structure), not content. `--trace-log`
-  appends every request to a file as the access-log line `obrien requests`
-  shows: trace or `NOTRACE`, preceded by `BLOCKED` if obrien rejected it
-  (`BLOCKED MALFORMED` if it failed the header sanity check).
-- A strict header sanity check (well-formed, unambiguous framing).
-- Runtime-editable named regexes on the raw header (`rules-add`,
-  `rules-rm`, `rules-list`).
-- Optional [OWASP CRS](https://coreruleset.org/) via
-  [Coraza](https://coraza.io/), including up to 1 MiB of body:
-  `--crs block` or `--crs detect` (log only).
-
-## Layout
-
-- `main.go`, `obrien.go`: the daemon: settings, listeners, TLS, metrics,
-  wiring.
-- `firewall.go`: `firewall-*` RPCs (nftables redirect of 80/443).
-- `requests.go`: `requests` RPC (the request log).
-- `rules_api.go`: `rules-*` RPCs (header patterns).
-- `certs.go`: TLS key pair, reloaded when its files change.
-- `annotator_test.go`: only 2xx/3xx/4xx requests get traces; blocks are marked.
-- [`proxy/`](proxy/README.md): forwarding.
-- [`monitor/`](monitor/README.md): hooks and the request log.
-- [`rules/`](rules/README.md): inspection and filtering.
-- [`trace/`](trace/README.md): request traces.
-- [`ARCH-DECISIONS.md`](ARCH-DECISIONS.md): design decisions.
+- No modifications to the web server itself is required
+- Enabled/disabled by adding or removing Linux kernel firewalling rules
+- Can handle both incoming HTTP and HTTPS fraffic
+- Can forward requests to a HTTP and/or HTTPS upstreams
+- Sets (after stripping) `X-Forwarded-For`/`-Host`/`-Proto` headers
+- Ensures any HTTP requests is well formed before it reaches your upstream
+- Optional enforcement of [OWASP CRS](https://coreruleset.org/) rules
+- Optional custom rules (header regexps) can be added/removed at runtime
+- Learning mode builds a profile of normal traffic to one or more websites
+- Enforcing mode blocks any traffic not fitting the profile
+- Exposes (Prometheus compatible) OpenMetrics
 
 ## Build
 
-[kettlingar-go](https://github.com/mailpile/kettlingar-go) (daemon, config,
-metrics, logging, CLI) and [Coraza](https://github.com/corazawaf/coraza)
-are submodules in `submodules/`, built via `replace` in `go.mod`, so local
-edits take effect on the next build. The CRS is embedded from the
-`coraza-coreruleset` module.
+Prerequisites: `golang` and `make`
 
 ```sh
-git submodule update --init   # fresh clone only
-make                          # static binary (cgo off); e.g. make GOARCH=arm64
+git clone https://github.com/BjarniRunar/obrien
+cd obrien
+make
 ```
 
-Pushing a `v*` tag runs `.github/workflows/release.yml`: tests, then a
-release with linux amd64/arm64 binaries and SHA-256 sums. Requires Go
-1.26+ (fetched automatically with `GOTOOLCHAIN=auto`).
+## Pre-built binaries
+
+See: <https://github.com/BjarniRunar/obrien/releases>
+
+Download the binary for your platform, install and make executable:
+
+```sh
+wget https://github.com/BjarniRunar/obrien/.../obrien-v0.0.1-linux-amd64
+sudo install -m 0755 obrien-v*amd64 /usr/local/bin/obrien
+```
 
 ## Usage
 
@@ -70,25 +55,28 @@ obrien stop
 certificate; `--foreground` (`-F`) stays attached. `obrien --help` with the
 daemon up lists every command.
 
-| Setting      | Default                 | Description                          |
-|--------------|-------------------------|--------------------------------------|
-| `--upstream` | `http://127.0.0.1:80`   | Cleartext listener's upstream |
-| `--upstream-https` | `https://127.0.0.1:443` | TLS listener's upstream; `http://` forwards cleartext |
-| `--http`     | `:9080`                 | Cleartext address, or `off` |
-| `--https`    | `:9443`                 | TLS address, or `off`; needs `--cert` and `--key` |
-| `--cert`     | `off`                   | TLS certificate (PEM); changes picked up within a minute |
-| `--key`      | `off`                   | TLS private key (PEM) |
-| `--request-log` | `1000`               | Requests kept in memory; `0` disables |
-| `--trace-log`   | `off`                | Absolute path of the trace log file |
-| `--crs`      | `off`                   | OWASP CRS: `block`, `detect` or `off` |
-| `--crs-paranoia` | `1`                 | CRS paranoia level, 1-4 |
-| `--crs-conf` | `off`                   | Absolute path of extra CRS directives |
-| `--trusted-proxies` | `off`            | IPs/CIDRs whose `X-Forwarded-For` is kept |
-| `--blocked-status` | `502`             | Status for blocked requests (400-599) |
-| `--blocked-url` | `off`                | Default explanation page linked from blocks |
+| Setting            | Default                | Description                                 |
+|--------------------|------------------------|---------------------------------------------|
+| `--upstream`       | `http://127.0.0.1:80`  | Cleartext listener's upstream               |
+| `--upstream-https` | `https://127.0.0.1:443`| HTTPS upstream; use `http://` for cleartext |
+| `--http`           | `:9080`                | Cleartext listening address:port, or `off`  |
+| `--https`          | `:9443`                | TLS listening address, or `off`             |
+| `--cert`           | `off`                  | Path to TLS certificate (PEM)               |
+| `--key`            | `off`                  | Path to TLS private key (PEM)               |
+| `--request-log`    | `1000`                 | Requests log lines kept in memory; `0`=off  |
+| `--trace-log`      | `off`                  | Path to the trace log file (auto-rotates)   |
+| `--crs`            | `off`                  | OWASP CRS: `block`, `detect` or `off`       |
+| `--crs-paranoia`   | `1`                    | CRS paranoia level, 1-4                     |
+| `--crs-conf`       | `off`                  | Absolute path of extra CRS directives       |
+| `--trusted-proxies`| `off`                  | IPs/CIDRs we `X-Forwarded-For` from         |
+| `--blocked-status` | `502`                  | Status for blocked requests (400-599)       |
+| `--blocked-url`    | `off`                  | Default explanation page linked from blocks |
 
-Settings also come from `OBRIEN_<NAME>` variables (e.g. `OBRIEN_UPSTREAM`)
-or `obrien.yaml` in the user config directory (`~/.config/kettlingar/`).
+Settings can also come from `OBRIEN_<NAME>` variables
+(e.g. `OBRIEN_UPSTREAM`)
+or `obrien.yaml` in the user config directory (`~/.config/obrien/`).
+The command-line overrides both the config file and the environment.
+
 
 ### Filtering requests
 
@@ -158,6 +146,21 @@ using an IP, or a name the certificate doesn't cover, get `502`. To skip
 re-encryption on a trusted hop, set `--upstream-https http://127.0.0.1:80`:
 requests go in cleartext with `X-Forwarded-Proto: https`. The upstream must
 not redirect them to HTTPS, or they loop.
+
+## Development
+
+This software is written using the assistance of an LLM coding tool,
+but humans are always responsible for the outcomes and are expected to review code before committing it.
+If you cannot explain what a pull request does, how, and why,
+(without consulting with the LLM)
+then the pull request is not ready for submission.
+
+The file [DEV-RULES.md](DEV-RULES.md) contains the basic rules,
+we expect both humans and LLMs to adhere to when contributing to this project.
+
+The file [ARCH-DECISIONS.md](ARCH-DECISIONS.md)
+summarizes the hows and whys of what the software does.
+
 
 ## License
 
