@@ -162,10 +162,12 @@ its key, or directories of them; every file in a directory is tried, and
 non-PEM files are skipped. The certificate is chosen by SNI: exact name,
 then wildcard, then the default (`--cert`/`--key`, else the first loaded).
 Files and directories are rechecked at most once a minute; a file that
-fails to load keeps its previous certificate and is logged.
+fails to load keeps its previous certificate and is logged. Expired
+certificates are not loaded, and stop being served when they expire.
 
 ```sh
 obrien start --tls-keys /etc/pagekite/keys,/srv/site.pem
+obrien certs-list    # files, names, expiry, default, load errors
 ```
 
 ### In front of a PageKite relay
@@ -175,8 +177,9 @@ obrien start --tls-keys /etc/pagekite/keys,/srv/site.pem
 - passes connections opening with `CONNECT`, `PING` or a PageKite
   WebSocket tunnel request straight to the upstream, unmodified and
   bypassing all rules (`proxy_tunnels_total`);
-- passes TLS for names no certificate covers to `--upstream-https`'s
-  address still encrypted, uninspected (`proxy_tls_passthrough_total`);
+- passes TLS for names no certificate covers, or without SNI, to
+  `--upstream-https`'s address still encrypted, uninspected
+  (`proxy_tls_passthrough_total`);
 - gives each client connection its own upstream connections, as the relay
   routes each by its first request, and serves HTTP/1.1 only.
 

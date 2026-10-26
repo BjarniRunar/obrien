@@ -215,6 +215,13 @@ func (p *Obrien) GetDocs() map[string]kettlingar.MethodDesc {
 		"firewall-off":    {Help: "Print commands removing obrien's firewall redirect"},
 		"firewall-status": {Help: "Print commands showing obrien's firewall redirect rules"},
 		"requests":        {Help: "Show recently proxied requests"},
+		"certs-list": {
+			Help: "Show loaded TLS certificates: file, names, expiry",
+			Docs: "Lists each certificate file in load order, marking the default (served\n" +
+				"when no name matches) and files that failed to load; a failed file keeps\n" +
+				"serving its previous certificate. Files are rechecked first, at most once\n" +
+				"a minute.",
+		},
 		"rules-list": {
 			Help: "Show the header patterns requests are rejected by",
 			Docs: "Lists the patterns in the order they are tried. Use -f json to save them in\n" +
@@ -391,9 +398,10 @@ func (p *Obrien) tunnel(listener string, target *url.URL) rules.TunnelFunc {
 	}
 }
 
-// passthrough returns the TLS listener's check for SNI names no certificate
-// covers, whose connections are passed to the upstream still encrypted, or
-// nil when --allow-pagekite is off.
+// passthrough returns the TLS listener's check for connections to pass to
+// the upstream still encrypted: SNI names no certificate covers, and no SNI
+// at all, as sent by old PageKite clients the relay may still support. Nil
+// when --allow-pagekite is off.
 func (p *Obrien) passthrough(listener string, tlsConfig *tls.Config, target *url.URL) rules.PassthroughFunc {
 	if !p.AllowPagekite || tlsConfig == nil {
 		return nil
@@ -404,7 +412,7 @@ func (p *Obrien) passthrough(listener string, tlsConfig *tls.Config, target *url
 		p.ks.MetricsCount("proxy_upstream_errors_total", 1, kettlingar.PublicMetric, nil)
 	})
 	return func(name string) rules.TunnelFunc {
-		if name == "" || p.certs.Has(name) {
+		if name != "" && p.certs.Has(name) {
 			return nil
 		}
 		return func(c net.Conn, head []byte) {

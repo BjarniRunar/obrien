@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,9 +52,10 @@ type certFile struct {
 // certIndex maps server names to certificates. Wildcards are keyed by the
 // parent domain they cover one label under.
 type certIndex struct {
-	def   *tls.Certificate
-	exact map[string][]*tls.Certificate
-	wild  map[string][]*tls.Certificate
+	expires time.Time // earliest NotAfter indexed, when the index goes stale
+	def     *tls.Certificate
+	exact   map[string][]*tls.Certificate
+	wild    map[string][]*tls.Certificate
 }
 
 // certStore serves certificates chosen by SNI, reloading files when they
@@ -137,7 +139,7 @@ func (s *certStore) load() {
 			changed = true
 		}
 	}
-	if changed || s.idx.Load() == nil {
+	if idx := s.idx.Load(); changed || idx == nil || time.Now().After(idx.expires) {
 		s.order = order
 		s.idx.Store(s.buildIndex())
 	}
@@ -169,6 +171,9 @@ func (s *certStore) loadFile(certPath, keyPath string) bool {
 	} else {
 		cert, err = tls.LoadX509KeyPair(certPath, keyPath)
 	}
+	if err == nil && time.Now().After(cert.Leaf.NotAfter) {
+		err = fmt.Errorf("certificate expired %s", cert.Leaf.NotAfter.Format(time.DateOnly))
+	}
 	f.err = err
 	if errors.Is(err, errNotPEM) {
 		return false
@@ -195,11 +200,16 @@ func (s *certStore) report(path string, err error) {
 }
 
 func (s *certStore) buildIndex() *certIndex {
+	now := time.Now()
 	idx := &certIndex{exact: map[string][]*tls.Certificate{}, wild: map[string][]*tls.Certificate{}}
 	for _, path := range s.order {
 		c := s.files[path].cert
-		if c == nil || c.Leaf == nil {
+		// Certificates that expired since loading are dropped here.
+		if c == nil || c.Leaf == nil || now.After(c.Leaf.NotAfter) {
 			continue
+		}
+		if idx.expires.IsZero() || c.Leaf.NotAfter.Before(idx.expires) {
+			idx.expires = c.Leaf.NotAfter
 		}
 		if idx.def == nil {
 			idx.def = c
@@ -307,6 +317,40 @@ func (s *certStore) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate
 func (s *certStore) Has(name string) bool {
 	s.maybeReload()
 	return len(s.idx.Load().match(name)) > 0
+}
+
+// certInfo describes one certificate file, for certs-list.
+type certInfo struct {
+	Path     string
+	Names    []string
+	NotAfter time.Time
+	Default  bool
+	Err      error // of the last load attempt; the previous certificate, if any, is still served
+}
+
+// list describes each file, in load order. Non-PEM files are left out.
+func (s *certStore) list() []certInfo {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	def := s.idx.Load().def
+	var out []certInfo
+	for _, path := range s.order {
+		f := s.files[path]
+		if errors.Is(f.err, errNotPEM) {
+			continue
+		}
+		ci := certInfo{Path: path, Err: f.err}
+		if c := f.cert; c != nil && c.Leaf != nil {
+			ci.Names = c.Leaf.DNSNames
+			if len(ci.Names) == 0 && c.Leaf.Subject.CommonName != "" {
+				ci.Names = []string{c.Leaf.Subject.CommonName}
+			}
+			ci.NotAfter = c.Leaf.NotAfter
+			ci.Default = c == def
+		}
+		out = append(out, ci)
+	}
+	return out
 }
 
 // splitPaths splits a comma-separated --tls-keys value.

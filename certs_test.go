@@ -20,6 +20,11 @@ import (
 // makePEM returns a self-signed certificate for cn and names, and its key.
 func makePEM(t *testing.T, cn string, names ...string) (certPEM, keyPEM []byte) {
 	t.Helper()
+	return makePEMUntil(t, time.Now().Add(time.Hour), cn, names...)
+}
+
+func makePEMUntil(t *testing.T, notAfter time.Time, cn string, names ...string) (certPEM, keyPEM []byte) {
+	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -29,7 +34,7 @@ func makePEM(t *testing.T, cn string, names ...string) (certPEM, keyPEM []byte) 
 		Subject:      pkix.Name{CommonName: cn},
 		DNSNames:     names,
 		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(time.Hour),
+		NotAfter:     notAfter,
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
@@ -105,6 +110,8 @@ func TestCertSelect(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "wild.pem"), append(k, c...), 0o600)
 	os.WriteFile(filepath.Join(dir, "README"), []byte("not a certificate\n"), 0o600)
 	os.WriteFile(filepath.Join(dir, "keyonly"), k, 0o600)
+	c, k = makePEMUntil(t, time.Now().Add(-time.Minute), "old", "a.example.com", "old.example.com")
+	os.WriteFile(filepath.Join(dir, "0-expired"), append(c, k...), 0o600)
 	cf, kf := filepath.Join(t.TempDir(), "c"), filepath.Join(t.TempDir(), "k")
 	writePair(t, cf, kf, "default")
 
@@ -113,7 +120,7 @@ func TestCertSelect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(warned) != 1 || warned[0] != "keyonly" {
+	if len(warned) != 2 || warned[0] != "0-expired" || warned[1] != "keyonly" {
 		t.Errorf("warned about %v", warned)
 	}
 	for name, want := range map[string]string{
@@ -133,6 +140,18 @@ func TestCertSelect(t *testing.T) {
 		}
 	}
 
+	got := map[string]certInfo{}
+	for _, ci := range s.list() {
+		got[filepath.Base(ci.Path)] = ci
+	}
+	if _, ok := got["README"]; ok || len(got) != 5 || got["0-expired"].Err == nil {
+		t.Errorf("list: %v", got)
+	}
+	if !got["c"].Default || got["a"].Default || got["keyonly"].Err == nil ||
+		len(got["wild.pem"].Names) != 1 || got["wild.pem"].Names[0] != "*.wild.example.com" {
+		t.Errorf("list: %+v", got)
+	}
+
 	os.Remove(filepath.Join(dir, "a"))
 	s.nextCheck.Store(0)
 	if cn := servedCN(t, s, "a.example.com"); cn != "default" {
@@ -141,5 +160,30 @@ func TestCertSelect(t *testing.T) {
 
 	if _, err := newCertStore("", "", []string{filepath.Join(dir, "README")}, noWarn(t)); err == nil {
 		t.Error("no certificates: want error")
+	}
+}
+
+// A certificate that expires while loaded stops being served at the next
+// check.
+func TestCertExpiresWhileLoaded(t *testing.T) {
+	dir := t.TempDir()
+	c, k := makePEMUntil(t, time.Now().Add(2*time.Second), "soon", "soon.example.com")
+	os.WriteFile(filepath.Join(dir, "soon"), append(c, k...), 0o600)
+	c, k = makePEM(t, "other", "other.example.com")
+	os.WriteFile(filepath.Join(dir, "other"), append(c, k...), 0o600)
+	s, err := newCertStore("", "", []string{dir}, noWarn(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.Has("soon.example.com") {
+		t.Fatal("not loaded")
+	}
+	time.Sleep(2100 * time.Millisecond)
+	s.nextCheck.Store(0)
+	if s.Has("soon.example.com") {
+		t.Error("expired certificate still served")
+	}
+	if cn := servedCN(t, s, ""); cn != "other" {
+		t.Errorf("default: got %q", cn)
 	}
 }

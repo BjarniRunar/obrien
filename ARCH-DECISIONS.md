@@ -243,8 +243,9 @@ client's SNI (#6). HTTP/2 connections are never diverted.
 
 TLS for SNI names no certificate covers (#16) is passed still encrypted to
 `--upstream-https`'s address: the relay serves those kites end to end.
-The ClientHello is read by aborting a handshake and replayed. Connections
-without SNI are terminated with the default certificate.
+Connections without SNI are passed through too: old PageKite clients may
+lack SNI, and the relay may support older TLS than obrien. The ClientHello
+is read by aborting a handshake and replayed.
 
 The relay routes each connection by its first request, so upstream
 connections belong to one client connection: reused for its requests,
@@ -264,5 +265,6 @@ certificate means nothing to pair up.
 exact match, then a wildcard one label up, preferring one the client
 supports (ECDSA/RSA), then the default (the pair, else the first loaded).
 Every file in a directory is tried; ones without `-----BEGIN ` or over
-1 MiB are silently skipped, other failures logged. Startup fails if the
-pair fails or nothing loads.
+1 MiB are silently skipped, other failures logged. Expired certificates
+are not loaded, and are dropped from the index once they expire. Startup fails if the
+pair fails or nothing loads. `certs-list` shows what is loaded (#3).
