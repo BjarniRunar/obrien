@@ -181,14 +181,15 @@ func (p *Obrien) ServiceStartup(ks *kettlingar.KettlingarService) error {
 func (p *Obrien) GetDocs() map[string]kettlingar.MethodDesc {
 	return map[string]kettlingar.MethodDesc{
 		"firewall-on": {
-			Help: "Redirect incoming TCP 80/443 to obrien's listeners",
-			Docs: "Installs nftables rules redirecting ports 80 and 443 to the ports obrien is\n" +
-				"listening on. With --local true, connections made on this host are\n" +
+			Help: "Print commands redirecting incoming TCP 80/443 to obrien",
+			Docs: "Prints, without running, a shell script redirecting ports 80 and 443 to the ports obrien is\n" +
+				"listening on, using nft if in /usr/sbin, else iptables/ip6tables; --mode\n" +
+				"nft or iptables picks one. With --local true, connections made on this host are\n" +
 				"redirected too. If an upstream is on a redirected port, connections from the\n" +
 				"daemon's own user are exempt, so obrien does not loop into itself.",
 		},
-		"firewall-off":    {Help: "Remove obrien's firewall redirect"},
-		"firewall-status": {Help: "Show obrien's firewall redirect rules"},
+		"firewall-off":    {Help: "Print commands removing obrien's firewall redirect"},
+		"firewall-status": {Help: "Print commands showing obrien's firewall redirect rules"},
 		"requests":        {Help: "Show recently proxied requests"},
 		"rules-list": {
 			Help: "Show the header patterns requests are rejected by",

@@ -41,14 +41,20 @@ would guess from flags and config, and could act while the daemon is down.
 
 ## 4. Standard ports via firewall redirect
 
-obrien listens on unprivileged ports; `firewall-on` installs nftables rules
-redirecting TCP 80/443 to the bound ports, `firewall-off` removes them.
+obrien listens on unprivileged ports; `firewall-on` prints a shell script
+redirecting TCP 80/443 to the bound ports, `firewall-off` and
+`firewall-status` print scripts removing and listing them. The operator
+runs them as root; obrien does not.
 
 **Why:** no root for the proxy, toggling without restart, doesn't impact
 or rely on the host configuration in any way.
 
-**How:** `sudo -n nft -f -`. Rules live in table `inet obrien`, replaced or
-deleted atomically, so obrien never edits rules it doesn't own. Redirection
+**How:** the daemon picks the tool: `/usr/sbin/nft` if present, else
+`iptables` (plus `ip6tables` if found); `--mode nft|iptables` overrides.
+With nft, rules live in table `inet obrien`, replaced or deleted
+atomically in one `nft` call. With iptables, they live in nat chains
+`OBRIEN-PRE`/`OBRIEN-OUT`, each with one jump from `PREROUTING`/`OUTPUT`;
+not atomic. Either way obrien never edits rules it doesn't own. Redirection
 is in `prerouting`, only for traffic to this host (`fib daddr type local`),
 never routed traffic (containers, VMs). `--local true` also redirects in
 `output`. If an upstream is on a redirected port, the daemon's uid is

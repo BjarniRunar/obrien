@@ -43,11 +43,11 @@ sudo install -m 0755 obrien-v*amd64 /usr/local/bin/obrien
 ```sh
 obrien start                 # cleartext on :9080 -> 127.0.0.1:80
 obrien start --cert cert.pem --key key.pem   # also HTTPS on :9443
-obrien firewall-on           # redirect 80/443 with nft
+obrien firewall-on | sudo sh # redirect 80/443
 obrien metrics               # OpenMetrics: proxy_*, rules_*, monitor_*
 obrien requests --count 20   # recent requests
 obrien rules-list
-obrien firewall-off
+obrien firewall-off | sudo sh
 obrien stop
 ```
 
@@ -113,15 +113,20 @@ server stays, and the firewall redirects incoming 80/443 to obrien:
 
 ```sh
 obrien start --cert cert.pem --key key.pem
-obrien firewall-on               # 80 -> 9080, 443 -> 9443
-obrien firewall-on --local true  # also redirect local connections
-obrien firewall-status           # rules and kernel counters
-obrien firewall-off
+obrien firewall-on               # print: 80 -> 9080, 443 -> 9443
+obrien firewall-on --local true  # print: also redirect local connections
+obrien firewall-on | sudo sh     # apply
+obrien firewall-status | sudo sh # rules and kernel counters
+obrien firewall-off | sudo sh
+obrien firewall-on --mode iptables   # force nft or iptables (default auto)
 ```
 
 Redirects target the ports actually bound by running listeners, so the
-daemon must be up. It runs `sudo -n nft` (needs passwordless sudo for
-`nft`). Rules live in table `inet obrien` only, and survive daemon stop.
+daemon must be up. The `firewall-*` commands only print a shell script, for
+the operator to review and run as root. It uses `/usr/sbin/nft` if present,
+with rules in table `inet obrien` only; else `iptables` (and `ip6tables`
+if found), with rules in nat chains `OBRIEN-PRE`/`OBRIEN-OUT` only. Rules
+survive daemon stop.
 
 Only connections addressed to this host are redirected, not routed traffic
 (containers, VMs). By default only traffic from other hosts is; a
@@ -130,7 +135,7 @@ are redirected too, to loopback, and:
 
 - If an upstream is on a redirected port (the default), the daemon's user is
   exempt for that port so obrien can reach it. This exempts all that
-  user's processes, so test as another user; `firewall-on` says when it
+  user's processes, so test as another user; `firewall-on` notes when it
   applies.
 - A loopback-only listener is accepted, with only the local redirect.
 - A listener on one specific non-loopback address is refused.

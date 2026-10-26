@@ -3,7 +3,6 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"net"
 	"net/http"
@@ -32,12 +31,30 @@ func (r *FirewallResponse) String() string {
 	return r.Output
 }
 
+type FirewallArgs struct {
+	Mode string `default:"auto" help:"Firewalling tool: nft, iptables or auto"`
+}
+
 type FirewallOnArgs struct {
-	Local bool `default:"false"`
+	Local bool   `default:"false"`
+	Mode  string `default:"auto" help:"Firewalling tool: nft, iptables or auto"`
+}
+
+// redirect sends TCP traffic for this host's port From to obrien's port To.
+// ExemptUid is the uid whose local connections are not redirected, or -1.
+type redirect struct {
+	From, To  int
+	Local     bool
+	ExemptUid int
 }
 
 func (p *Obrien) ApiFirewallOn(ri *kettlingar.RequestInfo, args FirewallOnArgs) *FirewallResponse {
-	var incoming, local, notes []string
+	fw, err := findFirewall(args.Mode)
+	if err != nil {
+		return firewallFailed(ri, "", err)
+	}
+	var rules []redirect
+	var notes []string
 	for _, r := range []struct {
 		from int
 		ln   net.Listener
@@ -52,12 +69,8 @@ func (p *Obrien) ApiFirewallOn(ri *kettlingar.RequestInfo, args FirewallOnArgs) 
 		if port == r.from {
 			continue
 		}
-		// Only connections addressed to this host are redirected. Without
-		// the fib match, prerouting would also catch traffic routed through
-		// the host, such as containers or VMs connecting out to port 443.
-		rule := fmt.Sprintf("fib daddr type local tcp dport %d counter redirect to :%d", r.from, port)
 		if !ip.IsLoopback() {
-			incoming = append(incoming, rule)
+			rules = append(rules, redirect{From: r.from, To: port, ExemptUid: -1})
 		} else if !args.Local {
 			return firewallFailed(ri, "", fmt.Errorf("listener %s is loopback-only and cannot receive redirected traffic; use --local true to redirect only local traffic", r.ln.Addr()))
 		}
@@ -65,33 +78,198 @@ func (p *Obrien) ApiFirewallOn(ri *kettlingar.RequestInfo, args FirewallOnArgs) 
 			if !ip.IsLoopback() && !ip.IsUnspecified() {
 				return firewallFailed(ri, "", fmt.Errorf("listener %s is not reachable on loopback, where local traffic is redirected", r.ln.Addr()))
 			}
-			match := ""
+			rule := redirect{From: r.from, To: port, Local: true, ExemptUid: -1}
 			// Either listener's upstream on this port may be on this host,
 			// and obrien's connections to it would be redirected back into
 			// obrien. They can only be told apart by uid, which also exempts
 			// any client running as the daemon's user.
 			if upstreamPort(p.upstream) == r.from || upstreamPort(p.upstreamHttps) == r.from {
-				match = fmt.Sprintf("meta skuid != %d ", os.Getuid()) + match
+				rule.ExemptUid = os.Getuid()
 				notes = append(notes, fmt.Sprintf(
-					"local connections to port %d from uid %d (obrien's user) are not redirected, so obrien can reach its upstream\n",
+					"# local connections to port %d from uid %d (obrien's user) are not redirected, so obrien can reach its upstream\n",
 					r.from, os.Getuid()))
 			}
-			local = append(local, match+rule)
+			rules = append(rules, rule)
 		}
 	}
-	if len(incoming) == 0 && len(local) == 0 {
+	if len(rules) == 0 {
 		return firewallFailed(ri, "", fmt.Errorf("no listener needs redirecting"))
 	}
-	script := deleteTableScript() + "table " + nftTable + " {\n" +
-		natChain("prerouting", "prerouting priority dstnat", incoming) +
-		natChain("output", "output priority -100", local) + "}\n"
-	if out, err := runNft(script); err != nil {
-		return firewallFailed(ri, out, err)
+	return &FirewallResponse{Output: fw.script(strings.Join(notes, "") + fw.on(rules))}
+}
+
+func (p *Obrien) ApiFirewallOff(ri *kettlingar.RequestInfo, args FirewallArgs) *FirewallResponse {
+	fw, err := findFirewall(args.Mode)
+	if err != nil {
+		return firewallFailed(ri, "", err)
 	}
-	p.ks.Logger.Info(serviceName+": firewall redirect installed", "incoming", len(incoming), "local", len(local))
-	status := p.ApiFirewallStatus(ri)
-	status.Output = strings.Join(notes, "") + status.Output
-	return status
+	return &FirewallResponse{Output: fw.script(fw.off())}
+}
+
+func (p *Obrien) ApiFirewallStatus(ri *kettlingar.RequestInfo, args FirewallArgs) *FirewallResponse {
+	fw, err := findFirewall(args.Mode)
+	if err != nil {
+		return firewallFailed(ri, "", err)
+	}
+	return &FirewallResponse{Output: fw.script(fw.status())}
+}
+
+func firewallFailed(ri *kettlingar.RequestInfo, out string, err error) *FirewallResponse {
+	ri.HttpCode = http.StatusInternalServerError
+	return &FirewallResponse{Output: out, Error: err.Error()}
+}
+
+// firewall renders shell scripts for one of the host's firewalling tools.
+// Tool paths are absolute, as root's PATH may differ from the daemon's.
+type firewall struct {
+	nft, iptables, ip6tables string
+}
+
+// findFirewall in auto mode prefers nft in /usr/sbin, then iptables (with
+// ip6tables if present), looked up in the sbin directories and the daemon's
+// PATH. A named mode never fails: a tool not found here is used by bare name,
+// so scripts can be made for other hosts.
+func findFirewall(mode string) (*firewall, error) {
+	switch mode {
+	case "nft":
+		return &firewall{nft: findToolOr("nft")}, nil
+	case "iptables":
+		return &firewall{iptables: findToolOr("iptables"), ip6tables: findToolOr("ip6tables")}, nil
+	case "auto":
+	default:
+		return nil, fmt.Errorf("unknown mode %q: use nft, iptables or auto", mode)
+	}
+	if isExecutable("/usr/sbin/nft") {
+		return &firewall{nft: "/usr/sbin/nft"}, nil
+	}
+	fw := &firewall{iptables: findTool("iptables"), ip6tables: findTool("ip6tables")}
+	if fw.iptables == "" {
+		return nil, fmt.Errorf("found neither /usr/sbin/nft nor iptables")
+	}
+	return fw, nil
+}
+
+func findTool(name string) string {
+	for _, dir := range []string{"/usr/sbin", "/sbin"} {
+		if path := dir + "/" + name; isExecutable(path) {
+			return path
+		}
+	}
+	path, _ := exec.LookPath(name)
+	return path
+}
+
+func findToolOr(name string) string {
+	if path := findTool(name); path != "" {
+		return path
+	}
+	return name
+}
+
+func isExecutable(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && fi.Mode().IsRegular() && fi.Mode()&0o111 != 0
+}
+
+func (fw *firewall) script(body string) string {
+	s := "#!/bin/sh\n# pipe me to sudo or run as root\n"
+	if fw.nft == "" && fw.ip6tables == "" {
+		s += "# ip6tables not found: IPv6 is not covered\n"
+	}
+	return s + body
+}
+
+func (fw *firewall) on(rules []redirect) string {
+	if fw.nft != "" {
+		var incoming, local []string
+		for _, r := range rules {
+			// Only connections addressed to this host are redirected. Without
+			// the fib match, prerouting would also catch traffic routed through
+			// the host, such as containers or VMs connecting out to port 443.
+			rule := fmt.Sprintf("fib daddr type local tcp dport %d counter redirect to :%d", r.From, r.To)
+			if r.ExemptUid >= 0 {
+				rule = fmt.Sprintf("meta skuid != %d ", r.ExemptUid) + rule
+			}
+			if r.Local {
+				local = append(local, rule)
+			} else {
+				incoming = append(incoming, rule)
+			}
+		}
+		return fw.nftScript(deleteTableScript() + "table " + nftTable + " {\n" +
+			natChain("prerouting", "prerouting priority dstnat", incoming) +
+			natChain("output", "output priority -100", local) + "}\n")
+	}
+	s := fw.off() + "set -e\n"
+	for _, tool := range fw.iptablesTools() {
+		for _, c := range iptablesChains {
+			s += fmt.Sprintf("%s -t nat -N %s\n", tool, c.own)
+		}
+		for _, r := range rules {
+			chain, match := iptablesChains[0].own, ""
+			if r.Local {
+				chain = iptablesChains[1].own
+			}
+			if r.ExemptUid >= 0 {
+				match = fmt.Sprintf(" -m owner ! --uid-owner %d", r.ExemptUid)
+			}
+			s += fmt.Sprintf("%s -t nat -A %s -p tcp --dport %d -m addrtype --dst-type LOCAL%s -j REDIRECT --to-ports %d\n",
+				tool, chain, r.From, match, r.To)
+		}
+		for _, c := range iptablesChains {
+			s += fmt.Sprintf("%s -t nat -A %s -j %s\n", tool, c.builtin, c.own)
+		}
+	}
+	return s
+}
+
+func (fw *firewall) off() string {
+	if fw.nft != "" {
+		return fw.nftScript(deleteTableScript())
+	}
+	s := ""
+	for _, tool := range fw.iptablesTools() {
+		for _, c := range iptablesChains {
+			s += fmt.Sprintf("while %s -t nat -D %s -j %s 2>/dev/null; do :; done\n", tool, c.builtin, c.own)
+			s += fmt.Sprintf("%s -t nat -F %s 2>/dev/null\n", tool, c.own)
+			s += fmt.Sprintf("%s -t nat -X %s 2>/dev/null\n", tool, c.own)
+		}
+	}
+	return s
+}
+
+func (fw *firewall) status() string {
+	if fw.nft != "" {
+		return fmt.Sprintf("%s list table %s\n", fw.nft, nftTable)
+	}
+	s := ""
+	for _, tool := range fw.iptablesTools() {
+		for _, c := range iptablesChains {
+			s += fmt.Sprintf("%s -t nat -L %s -n -v\n", tool, c.own)
+		}
+	}
+	return s
+}
+
+// nftScript runs the script as one nft transaction, so a failure leaves the
+// previous ruleset in place. nft reads its arguments as a script.
+func (fw *firewall) nftScript(script string) string {
+	return fw.nft + " '\n" + script + "'\n"
+}
+
+func (fw *firewall) iptablesTools() []string {
+	if fw.ip6tables == "" {
+		return []string{fw.iptables}
+	}
+	return []string{fw.iptables, fw.ip6tables}
+}
+
+// iptablesChains are obrien's own nat chains, each reached by one jump from
+// a built-in chain, so removal never touches anyone else's rules. Unlike
+// nft, iptables changes are not atomic.
+var iptablesChains = []struct{ builtin, own string }{
+	{"PREROUTING", "OBRIEN-PRE"},
+	{"OUTPUT", "OBRIEN-OUT"},
 }
 
 // upstreamPort returns the TCP port obrien connects to for its upstream.
@@ -112,27 +290,6 @@ func natChain(name, hook string, rules []string) string {
 	}
 	return fmt.Sprintf("\tchain %s {\n\t\ttype nat hook %s; policy accept;\n\t\t%s\n\t}\n",
 		name, hook, strings.Join(rules, "\n\t\t"))
-}
-
-func (p *Obrien) ApiFirewallOff(ri *kettlingar.RequestInfo) *FirewallResponse {
-	if out, err := runNft(deleteTableScript()); err != nil {
-		return firewallFailed(ri, out, err)
-	}
-	p.ks.Logger.Info(serviceName + ": firewall redirect removed")
-	return &FirewallResponse{Output: "removed table " + nftTable + "\n"}
-}
-
-func (p *Obrien) ApiFirewallStatus(ri *kettlingar.RequestInfo) *FirewallResponse {
-	out, err := sudoNft(nil, "list", "table", nftTable)
-	if err != nil {
-		return firewallFailed(ri, out, err)
-	}
-	return &FirewallResponse{Output: out}
-}
-
-func firewallFailed(ri *kettlingar.RequestInfo, out string, err error) *FirewallResponse {
-	ri.HttpCode = http.StatusInternalServerError
-	return &FirewallResponse{Output: out, Error: err.Error()}
 }
 
 // listenerAddr splits a bound listener's address. "redirect" rewrites the
@@ -157,24 +314,4 @@ func listenerAddr(addr net.Addr) (net.IP, int, error) {
 // nft releases lack "destroy table".
 func deleteTableScript() string {
 	return fmt.Sprintf("table %s\ndelete table %s\n", nftTable, nftTable)
-}
-
-// runNft applies the script as one nft transaction, so a failure leaves the
-// previous ruleset in place.
-func runNft(script string) (string, error) {
-	return sudoNft(strings.NewReader(script), "-f", "-")
-}
-
-// sudoNft uses "sudo -n" because the daemon has no terminal: a password
-// prompt would hang the RPC call instead of failing it.
-func sudoNft(stdin *strings.Reader, args ...string) (string, error) {
-	cmd := exec.Command("sudo", append([]string{"-n", "nft"}, args...)...)
-	if stdin != nil {
-		cmd.Stdin = stdin
-	}
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
-	err := cmd.Run()
-	return out.String(), err
 }
