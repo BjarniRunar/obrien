@@ -6,6 +6,8 @@ package proxy
 
 import (
 	"context"
+	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -13,12 +15,20 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
 // ErrorFunc is called when a request cannot be forwarded to the upstream.
 // The client has already been sent a 502 by the time it runs.
 type ErrorFunc func(r *http.Request, err error)
+
+// Proxy is a reverse proxy to a single upstream.
+type Proxy struct {
+	rp        *httputil.ReverseProxy
+	perClient bool
+	clients   sync.Map // client net.Conn -> *clientTransport
+}
 
 // New returns a reverse proxy to target, tuned for many concurrent clients.
 //
@@ -29,30 +39,46 @@ type ErrorFunc func(r *http.Request, err error)
 //
 // X-Forwarded-For is set to the client's address. Only when the client is
 // in trusted is the X-Forwarded-For it sent kept, with its address appended.
-func New(target *url.URL, trusted []netip.Prefix, onError ErrorFunc) http.Handler {
-	dialer := &net.Dialer{
-		Timeout:   5 * time.Second,
-		KeepAlive: 30 * time.Second,
-	}
-	upstreamAddr := target.Host
-	if target.Port() == "" {
-		upstreamAddr = net.JoinHostPort(target.Hostname(), defaultPort(target.Scheme))
-	}
-	transport := &http.Transport{
-		Proxy: nil,
-		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-			return dialer.DialContext(ctx, network, upstreamAddr)
-		},
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          1024,
-		MaxIdleConnsPerHost:   1024,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   5 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second,
+//
+// With perClient, upstream connections belong to one client connection:
+// reused for its requests only, and closed with it. This is for upstreams
+// (such as PageKite relays) that route each connection by its first
+// request. HTTP/2 to the upstream is then off, and the server must install
+// ConnContext and ConnState.
+func New(target *url.URL, trusted []netip.Prefix, perClient bool, onError ErrorFunc) *Proxy {
+	upstreamAddr := addrOf(target)
+	newTransport := func() *http.Transport {
+		t := &http.Transport{
+			Proxy: nil,
+			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return dialer.DialContext(ctx, network, upstreamAddr)
+			},
+			ForceAttemptHTTP2:     !perClient,
+			MaxIdleConns:          1024,
+			MaxIdleConnsPerHost:   1024,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   5 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+			ResponseHeaderTimeout: 30 * time.Second,
+		}
+		if perClient {
+			t.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+		}
+		return t
 	}
 
-	return &httputil.ReverseProxy{
+	p := &Proxy{perClient: perClient}
+	var transport http.RoundTripper = newTransport()
+	if perClient {
+		transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			ct, ok := r.Context().Value(clientKey{}).(*clientTransport)
+			if !ok {
+				return nil, errors.New("request not on a tracked client connection")
+			}
+			return ct.get(newTransport).RoundTrip(r)
+		})
+	}
+	p.rp = &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
 			r.SetURL(target)
 			// The transport takes the TLS name from the URL and also keys
@@ -80,7 +106,68 @@ func New(target *url.URL, trusted []netip.Prefix, onError ErrorFunc) http.Handle
 			}
 		},
 	}
+	return p
 }
+
+func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) { p.rp.ServeHTTP(w, r) }
+
+type clientKey struct{}
+
+// ConnContext gives each client connection its own upstream connections when
+// perClient; install it as (or chain it from) the http.Server's ConnContext.
+func (p *Proxy) ConnContext(ctx context.Context, c net.Conn) context.Context {
+	if !p.perClient {
+		return ctx
+	}
+	ct := &clientTransport{}
+	p.clients.Store(c, ct)
+	return context.WithValue(ctx, clientKey{}, ct)
+}
+
+// ConnState closes a client's upstream connections when it closes or is
+// hijacked; install it as the http.Server's ConnState.
+func (p *Proxy) ConnState(c net.Conn, state http.ConnState) {
+	if state != http.StateClosed && state != http.StateHijacked {
+		return
+	}
+	if ct, ok := p.clients.LoadAndDelete(c); ok {
+		ct.(*clientTransport).close()
+	}
+}
+
+// clientTransport is one client connection's upstream connection pool,
+// created on its first request. Connections in use when the client closes
+// return to a closed pool and are dropped by IdleConnTimeout.
+type clientTransport struct {
+	mu     sync.Mutex
+	t      *http.Transport
+	closed bool
+}
+
+func (ct *clientTransport) get(newTransport func() *http.Transport) *http.Transport {
+	ct.mu.Lock()
+	defer ct.mu.Unlock()
+	if ct.t == nil {
+		ct.t = newTransport()
+		if ct.closed {
+			ct.t.DisableKeepAlives = true
+		}
+	}
+	return ct.t
+}
+
+func (ct *clientTransport) close() {
+	ct.mu.Lock()
+	defer ct.mu.Unlock()
+	ct.closed = true
+	if ct.t != nil {
+		ct.t.CloseIdleConnections()
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 // ParseTrusted parses a comma-separated list of IP addresses and CIDR
 // prefixes.
@@ -133,6 +220,19 @@ func clientServerName(r *http.Request) string {
 		return ""
 	}
 	return host
+}
+
+var dialer = &net.Dialer{
+	Timeout:   5 * time.Second,
+	KeepAlive: 30 * time.Second,
+}
+
+// addrOf returns target's host:port, with the scheme's default port.
+func addrOf(target *url.URL) string {
+	if target.Port() == "" {
+		return net.JoinHostPort(target.Hostname(), defaultPort(target.Scheme))
+	}
+	return target.Host
 }
 
 func defaultPort(scheme string) string {

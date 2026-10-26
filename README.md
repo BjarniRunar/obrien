@@ -5,11 +5,12 @@ monitors and optionally blocks requests to a single upstream web server.
 
 ## Features
 
-- No modifications to the web server itself is required
+- No modifications to the web server (or its configuration) is required
 - Enabled/disabled by adding or removing Linux kernel firewalling rules
 - Can handle both incoming HTTP and HTTPS fraffic
 - Can forward requests to a HTTP and/or HTTPS upstreams
 - Sets (after stripping) `X-Forwarded-For`/`-Host`/`-Proto` headers
+- Optionally tunnels PageKite and `CONNECT` unmodified, to front a PageKite relay
 - Ensures any HTTP requests is well formed before it reaches your upstream
 - Optional enforcement of [OWASP CRS](https://coreruleset.org/) rules
 - Optional custom rules (header regexps) can be added/removed at runtime
@@ -63,6 +64,8 @@ daemon up lists every command.
 | `--https`          | `:9443`                | TLS listening address, or `off`             |
 | `--cert`           | `off`                  | Path to TLS certificate (PEM)               |
 | `--key`            | `off`                  | Path to TLS private key (PEM)               |
+| `--tls-keys`       | `off`                  | Combined PEM files/dirs, chosen by SNI      |
+| `--allow-pagekite` | `false`                | Front a PageKite relay (see below)          |
 | `--request-log`    | `1000`                 | Requests log lines kept in memory; `0`=off  |
 | `--trace-log`      | `off`                  | Path to the trace log file (auto-rotates)   |
 | `--crs`            | `off`                  | OWASP CRS: `block`, `detect` or `off`       |
@@ -151,6 +154,34 @@ using an IP, or a name the certificate doesn't cover, get `502`. To skip
 re-encryption on a trusted hop, set `--upstream-https http://127.0.0.1:80`:
 requests go in cleartext with `X-Forwarded-Proto: https`. The upstream must
 not redirect them to HTTPS, or they loop.
+
+### Multiple certificates
+
+`--tls-keys` takes PEM files holding a certificate chain (leaf first) and
+its key, or directories of them; every file in a directory is tried, and
+non-PEM files are skipped. The certificate is chosen by SNI: exact name,
+then wildcard, then the default (`--cert`/`--key`, else the first loaded).
+Files and directories are rechecked at most once a minute; a file that
+fails to load keeps its previous certificate and is logged.
+
+```sh
+obrien start --tls-keys /etc/pagekite/keys,/srv/site.pem
+```
+
+### In front of a PageKite relay
+
+`obrien start --allow-pagekite true`:
+
+- passes connections opening with `CONNECT`, `PING` or a PageKite
+  WebSocket tunnel request straight to the upstream, unmodified and
+  bypassing all rules (`proxy_tunnels_total`);
+- passes TLS for names no certificate covers to `--upstream-https`'s
+  address still encrypted, uninspected (`proxy_tls_passthrough_total`);
+- gives each client connection its own upstream connections, as the relay
+  routes each by its first request, and serves HTTP/1.1 only.
+
+Other traffic is inspected as usual. Tunnels and passthrough are logged,
+but don't appear in `requests` or the trace log.
 
 ## Development
 

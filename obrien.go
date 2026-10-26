@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/mailpile/kettlingar-go/kettlingar"
@@ -40,6 +42,7 @@ type Obrien struct {
 	Https         string `default:":9443" help:"TLS listen address (used once --cert and --key are set), or off"`
 	Cert          string `default:"off"   help:"TLS certificate file (PEM)"`
 	Key           string `default:"off"   help:"TLS private key file (PEM)"`
+	TlsKeys       string `default:"off"   help:"Comma-separated PEM files holding a certificate chain and key, or directories of them; chosen by SNI"`
 
 	BlockedStatus int    `default:"502" help:"HTTP status for requests blocked by rules (400-599)"`
 	BlockedUrl    string `default:"off" help:"Page linked from block responses explaining blocks, unless the rule sets its own, or off"`
@@ -49,6 +52,7 @@ type Obrien struct {
 	CrsConf     string `default:"off" help:"Absolute path of extra CRS directives (tuning, exclusions), or off"`
 
 	TrustedProxies string `default:"off" help:"Comma-separated IPs/CIDRs whose X-Forwarded-For is kept, or off"`
+	AllowPagekite  bool   `default:"false" help:"Pass PageKite handshakes and CONNECTs to the upstream unmodified and uninspected"`
 
 	RequestLog int    `default:"1000" help:"Recent requests kept in memory, or 0"`
 	TraceLog   string `default:"off"  help:"Absolute path of a file to append a line per request to, with its trace, or off; rotated every 20 MB"`
@@ -57,6 +61,7 @@ type Obrien struct {
 	servers       []*http.Server
 	upstream      *url.URL
 	upstreamHttps *url.URL
+	certs         *certStore
 	hooks         []monitor.Hook
 	log           *monitor.Log
 	traceFile     *monitor.RotatingFile
@@ -100,17 +105,19 @@ func (p *Obrien) ServiceStartup(ks *kettlingar.KettlingarService) error {
 	// --https has a default address, so without a certificate the TLS
 	// listener is simply not started rather than being an error.
 	https := p.Https
-	if p.Cert == off {
+	if p.Cert == off && p.TlsKeys == off {
 		https = off
 	}
 	if p.Http == off && https == off {
-		return errors.New("no listener enabled: set --http, or --cert and --key for --https")
+		return errors.New("no listener enabled: set --http, or --cert and --key or --tls-keys for --https")
 	}
 
 	ks.MetricsHelp("proxy_connections_total", "Client connections accepted, by listener", kettlingar.PublicMetric)
 	ks.MetricsHelp("proxy_requests_total", "Proxied requests by listener and status", kettlingar.PublicMetric)
 	ks.MetricsHelp("proxy_request_time_us", "Proxied request time in microseconds", kettlingar.PublicMetric)
 	ks.MetricsHelp("proxy_upstream_errors_total", "Requests that failed to reach the upstream", kettlingar.PublicMetric)
+	ks.MetricsHelp("proxy_tunnels_total", "Connections tunnelled unmodified (PageKite, CONNECT), by listener", kettlingar.PublicMetric)
+	ks.MetricsHelp("proxy_tls_passthrough_total", "TLS connections passed on encrypted, for names without a certificate, by listener", kettlingar.PublicMetric)
 	ks.MetricsHelp("rules_rejected_total", "Requests rejected by rules", kettlingar.PublicMetric)
 	ks.MetricsHelp("rules_checked_total", "Requests checked against rules", kettlingar.PublicMetric)
 	ks.MetricsHelp("rules_invalid_total", "Requests rejected by the header sanity check", kettlingar.PublicMetric)
@@ -154,26 +161,43 @@ func (p *Obrien) ServiceStartup(ks *kettlingar.KettlingarService) error {
 			return fmt.Errorf("listen http: %w", err)
 		}
 		p.httpLn = ln
-		srv := proxy.NewServer(monitor.Middleware("http", p.hooks, p.annotator(), p.hooksTimed, p.pipeline(target)))
-		p.serve("http", srv, ln, nil)
+		px := proxy.New(target, p.trusted, p.AllowPagekite, p.upstreamError)
+		srv := proxy.NewServer(monitor.Middleware("http", p.hooks, p.annotator(), p.hooksTimed, p.pipeline(px)))
+		p.serve("http", srv, ln, nil, target, px)
 	}
 	if https != off {
-		kp, err := newKeyPair(p.Cert, p.Key)
-		if err != nil {
-			return fmt.Errorf("load TLS keypair: %w", err)
+		pairCert, pairKey, keyPaths := p.Cert, p.Key, []string(nil)
+		if p.Cert == off {
+			pairCert, pairKey = "", ""
 		}
+		if p.TlsKeys != off {
+			keyPaths = splitPaths(p.TlsKeys)
+		}
+		certs, err := newCertStore(pairCert, pairKey, keyPaths, func(path string, err error) {
+			p.ks.Logger.Warn(serviceName+": TLS certificate not loaded", "path", path, "err", err)
+		})
+		if err != nil {
+			return fmt.Errorf("load TLS certificates: %w", err)
+		}
+		p.certs = certs
 		ln, err := net.Listen("tcp", https)
 		if err != nil {
 			return fmt.Errorf("listen https: %w", err)
 		}
 		p.httpsLn = ln
-		srv := proxy.NewServer(monitor.Middleware("https", p.hooks, p.annotator(), p.hooksTimed, p.pipeline(targetHttps)))
+		px := proxy.New(targetHttps, p.trusted, p.AllowPagekite, p.upstreamError)
+		srv := proxy.NewServer(monitor.Middleware("https", p.hooks, p.annotator(), p.hooksTimed, p.pipeline(px)))
 		srv.TLSConfig = &tls.Config{
 			MinVersion:     tls.VersionTLS12,
 			NextProtos:     []string{"h2", "http/1.1"},
-			GetCertificate: kp.GetCertificate,
+			GetCertificate: certs.GetCertificate,
 		}
-		p.serve("https", srv, ln, srv.TLSConfig)
+		// An HTTP/2 client may send requests for several sites over one
+		// connection, which a PageKite relay would route by the first.
+		if p.AllowPagekite {
+			srv.TLSConfig.NextProtos = []string{"http/1.1"}
+		}
+		p.serve("https", srv, ln, srv.TLSConfig, targetHttps, px)
 	}
 	return nil
 }
@@ -212,7 +236,7 @@ func (p *Obrien) GetDocs() map[string]kettlingar.MethodDesc {
 	}
 }
 
-func (p *Obrien) pipeline(target *url.URL) http.Handler {
+func (p *Obrien) pipeline(px *proxy.Proxy) http.Handler {
 	infoURL := p.BlockedUrl
 	if infoURL == off {
 		infoURL = ""
@@ -221,7 +245,7 @@ func (p *Obrien) pipeline(target *url.URL) http.Handler {
 	if p.crs != nil {
 		list = append(list, p.crs)
 	}
-	return rules.Filter(list, p.BlockedStatus, infoURL, p.rejected, p.rulesTimed, proxy.New(target, p.trusted, p.upstreamError))
+	return rules.Filter(list, p.BlockedStatus, infoURL, p.rejected, p.rulesTimed, px)
 }
 
 func parseUpstream(raw string) (*url.URL, error) {
@@ -235,16 +259,19 @@ func parseUpstream(raw string) (*url.URL, error) {
 // serve counts connections as they are accepted, before any TLS handshake or
 // request, so traffic that reaches obrien shows up in metrics even when no
 // request completes.
-func (p *Obrien) serve(listener string, srv *http.Server, ln net.Listener, tlsConfig *tls.Config) {
+func (p *Obrien) serve(listener string, srv *http.Server, ln net.Listener, tlsConfig *tls.Config, target *url.URL, px *proxy.Proxy) {
 	labels := kettlingar.MetricLabels{"listener": listener}
 	counted := countingListener{ln, func() {
 		p.ks.MetricsCount("proxy_connections_total", 1, kettlingar.PublicMetric, labels)
 	}}
-	srv.ConnContext = rules.ConnContext
+	srv.ConnContext = func(ctx context.Context, c net.Conn) context.Context {
+		return px.ConnContext(rules.ConnContext(ctx, c), c)
+	}
+	srv.ConnState = px.ConnState
 	p.servers = append(p.servers, srv)
 	p.ks.Logger.Info(serviceName+": proxying", "listener", listener, "listen", ln.Addr().String())
 	go func() {
-		if err := srv.Serve(rules.Listen(counted, tlsConfig, srv.MaxHeaderBytes)); !errors.Is(err, http.ErrServerClosed) {
+		if err := srv.Serve(rules.Listen(counted, tlsConfig, srv.MaxHeaderBytes, p.tunnel(listener, target), p.passthrough(listener, tlsConfig, target))); !errors.Is(err, http.ErrServerClosed) {
 			p.ks.Logger.Error(serviceName+": proxy server error", "err", err)
 		}
 	}()
@@ -342,6 +369,50 @@ func (p *Obrien) crsTimed(_ *http.Request, d time.Duration) {
 func (p *Obrien) upstreamError(r *http.Request, err error) {
 	p.ks.Logger.Warn(serviceName+": upstream error", "method", r.Method, "url", r.URL.String(), "err", err)
 	p.ks.MetricsCount("proxy_upstream_errors_total", 1, kettlingar.PublicMetric, nil)
+}
+
+// tunnel returns the listener's PageKite/CONNECT tunnel, or nil when
+// --allow-pagekite is off. Tunnels bypass net/http, so they are only counted
+// and logged, never recorded as requests.
+func (p *Obrien) tunnel(listener string, target *url.URL) rules.TunnelFunc {
+	if !p.AllowPagekite {
+		return nil
+	}
+	labels := kettlingar.MetricLabels{"listener": listener}
+	t := proxy.Tunnel(target, func(c net.Conn, err error) {
+		p.ks.Logger.Warn(serviceName+": tunnel upstream error", "remote", c.RemoteAddr().String(), "err", err)
+		p.ks.MetricsCount("proxy_upstream_errors_total", 1, kettlingar.PublicMetric, nil)
+	})
+	return func(c net.Conn, head []byte) {
+		line, _, _ := bytes.Cut(head, []byte("\n"))
+		p.ks.Logger.Info(serviceName+": tunnel", "listener", listener, "remote", c.RemoteAddr().String(), "request", strings.TrimSpace(string(line)))
+		p.ks.MetricsCount("proxy_tunnels_total", 1, kettlingar.PublicMetric, labels)
+		t(c, head)
+	}
+}
+
+// passthrough returns the TLS listener's check for SNI names no certificate
+// covers, whose connections are passed to the upstream still encrypted, or
+// nil when --allow-pagekite is off.
+func (p *Obrien) passthrough(listener string, tlsConfig *tls.Config, target *url.URL) rules.PassthroughFunc {
+	if !p.AllowPagekite || tlsConfig == nil {
+		return nil
+	}
+	labels := kettlingar.MetricLabels{"listener": listener}
+	t := proxy.RawTunnel(target, func(c net.Conn, err error) {
+		p.ks.Logger.Warn(serviceName+": TLS passthrough upstream error", "remote", c.RemoteAddr().String(), "err", err)
+		p.ks.MetricsCount("proxy_upstream_errors_total", 1, kettlingar.PublicMetric, nil)
+	})
+	return func(name string) rules.TunnelFunc {
+		if name == "" || p.certs.Has(name) {
+			return nil
+		}
+		return func(c net.Conn, head []byte) {
+			p.ks.Logger.Info(serviceName+": TLS passthrough", "listener", listener, "remote", c.RemoteAddr().String(), "sni", name)
+			p.ks.MetricsCount("proxy_tls_passthrough_total", 1, kettlingar.PublicMetric, labels)
+			t(c, head)
+		}
+	}
 }
 
 func (p *Obrien) rejected(r *http.Request, err error) {

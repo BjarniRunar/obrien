@@ -28,7 +28,8 @@ its traffic can be monitored and filtered.
   `ServiceStartup`, before `obrien start` reports success.
 - **Pipeline:** `monitor.Middleware` → `rules.Filter` → `proxy.New`;
   deciding what passes is separate from moving it.
-- **Performance:** pooled keep-alive upstream connections, reused buffers,
+- **Performance:** pooled keep-alive upstream connections (per client
+  with `--allow-pagekite`, #15), reused buffers,
   immediate flushing, client and upstream timeouts.
 - **Transparency:** `Host` forwarded unchanged; `X-Forwarded-*` set.
 
@@ -208,14 +209,60 @@ After 20 MB written, the file is renamed with a `.YYYYMMDD-HHMMSS` suffix
 and a new one opened; old files are never pruned, as collection should not
 silently lose data. Bytes already in the file at start don't count.
 
-## 14. TLS key pair reloads itself
+## 14. TLS certificates reload themselves
 
-The cert and key are re-read when their mtime or size changes, checked at
-most once a minute, from `tls.Config.GetCertificate`.
+Certificate files are re-read when their mtime or size changes, and
+`--tls-keys` directories rescanned, at most once a minute, from
+`tls.Config.GetCertificate`.
 
-**Why:** renewals (e.g. Let's Encrypt) shouldn't need a restart, and
-handshakes shouldn't each hit the filesystem.
+**Why:** renewals (e.g. Let's Encrypt) and new PageKite kites shouldn't
+need a restart, and handshakes shouldn't each hit the filesystem.
 
-**How:** one handshake per interval stats both files; others use the cached
-pair. A failed load (e.g. cert and key mid-replacement) keeps the old pair
-and retries at the next check. No checks happen without traffic.
+**How:** one handshake per interval checks; others use the cached index. A
+file that fails to load (e.g. cert and key mid-replacement) keeps its old
+certificate, is logged once, and is retried when it changes. No checks
+happen without traffic.
+
+## 15. PageKite and CONNECT tunnelled unmodified, opt-in
+
+With `--allow-pagekite`, connections whose first line is `CONNECT `,
+`PING `, or a GET to a PageKite WebSocket tunnel path are passed to the
+upstream as opaque byte streams, uninspected and unmodified.
+
+**Why:** so obrien can front a PageKite relay. Its back-ends' tunnels and
+probes aren't web requests, and the WebSocket handshake lacks the `Host`
+header net/http requires. Opt-in, as it lets traffic past every rule.
+
+**How:** `rules.Listen` reads the first line before net/http (or any
+rule) sees the connection; matches go to `proxy.Tunnel`, which replays the
+bytes read and copies both ways. A crude prefix test; the relay decides
+what is valid. Only the first request on a connection is checked, as relays
+do. Tunnels aren't requests: no record, trace or log line, only
+`proxy_tunnels_total` and a log entry. TLS to the upstream uses the
+client's SNI (#6). HTTP/2 connections are never diverted.
+
+TLS for SNI names no certificate covers (#16) is passed still encrypted to
+`--upstream-https`'s address: the relay serves those kites end to end.
+The ClientHello is read by aborting a handshake and replayed. Connections
+without SNI are terminated with the default certificate.
+
+The relay routes each connection by its first request, so upstream
+connections belong to one client connection: reused for its requests,
+never another client's (#2), closed when it closes. HTTP/2 is off on both
+sides: clients are offered only `http/1.1` by ALPN, as one HTTP/2
+connection may carry several sites.
+
+## 16. Multiple certificates, chosen by SNI
+
+`--tls-keys` adds combined PEM files (chain and key, as PageKite uses), or
+directories of them, beside the `--cert`/`--key` pair.
+
+**Why:** a relay serves many names, often with wildcards; one file per
+certificate means nothing to pair up.
+
+**How:** certificates are indexed by their DNS names (the CN if none):
+exact match, then a wildcard one label up, preferring one the client
+supports (ECDSA/RSA), then the default (the pair, else the first loaded).
+Every file in a directory is tried; ones without `-----BEGIN ` or over
+1 MiB are silently skipped, other failures logged. Startup fails if the
+pair fails or nothing loads.

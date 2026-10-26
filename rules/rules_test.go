@@ -148,7 +148,7 @@ func serve(t *testing.T, tlsConfig *tls.Config) (string, chan error) {
 			io.WriteString(w, proto+" "+r.URL.Path)
 		}))
 	srv := &http.Server{Handler: h, ConnContext: ConnContext, MaxHeaderBytes: 1 << 16, TLSConfig: tlsConfig}
-	go srv.Serve(Listen(ln, tlsConfig, srv.MaxHeaderBytes))
+	go srv.Serve(Listen(ln, tlsConfig, srv.MaxHeaderBytes, nil, nil))
 	t.Cleanup(func() { srv.Close() })
 	return ln.Addr().String(), rejects
 }
@@ -276,7 +276,7 @@ func TestForbiddenPage(t *testing.T) {
 			t.Fatal(err)
 		}
 		srv := &http.Server{Handler: Filter([]Rule{Sanity{}, p}, http.StatusBadGateway, tc.infoURL, nil, nil, http.NotFoundHandler()), ConnContext: ConnContext}
-		go srv.Serve(Listen(ln, nil, 1<<16))
+		go srv.Serve(Listen(ln, nil, 1<<16, nil, nil))
 		resp, err := http.Get("http://" + ln.Addr().String() + tc.path)
 		if err != nil {
 			t.Fatal(err)
@@ -287,6 +287,83 @@ func TestForbiddenPage(t *testing.T) {
 		if resp.StatusCode != http.StatusBadGateway || !strings.Contains(string(body), tc.want) ||
 			!strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html") {
 			t.Errorf("%s: %d %q, want %q", tc.path, resp.StatusCode, body, tc.want)
+		}
+	}
+}
+
+func TestListenTunnel(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := NewPatterns(nil)
+	p.Add([]Pattern{{Name: "evil", Regexp: "evil"}}, "")
+	srv := &http.Server{Handler: Filter([]Rule{Sanity{}, p}, http.StatusForbidden, "", nil, nil, http.NotFoundHandler()), ConnContext: ConnContext}
+	tunnel := func(c net.Conn, head []byte) {
+		defer c.Close()
+		c.Write(append([]byte("TUNNEL "), head...))
+	}
+	go srv.Serve(Listen(ln, nil, 1<<16, tunnel, nil))
+	t.Cleanup(func() { srv.Close() })
+	for _, tc := range []struct{ req, want string }{
+		{"CONNECT PageKite:1 HTTP/1.0\r\nX-Evil: 1\r\n\r\n", "TUNNEL CONNECT PageKite:1"},
+		{"GET /~:PageKite:~/v0.8 HTTP/1.1\r\nUpgrade: websocket\r\n\r\n", "TUNNEL GET /~:PageKite:~/v0.8"},
+		{"PING x HTTP/1.1\r\n\r\n", "TUNNEL PING x"},
+		{"GET /evil HTTP/1.1\r\nHost: x\r\n\r\n", "HTTP/1.1 403"},
+		{"GET /ok HTTP/1.1\r\nHost: x\r\n\r\n", "HTTP/1.1 404"},
+	} {
+		c, err := net.Dial("tcp", ln.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.SetDeadline(time.Now().Add(time.Second))
+		io.WriteString(c, tc.req)
+		line, _ := bufio.NewReader(c).ReadString('\n')
+		c.Close()
+		if !strings.HasPrefix(line, tc.want) {
+			t.Errorf("%q: got %q, want %q", tc.req, line, tc.want)
+		}
+	}
+}
+
+// Passed-through TLS connections replay the ClientHello intact: here the
+// tunnel completes the handshake itself.
+func TestListenPassthrough(t *testing.T) {
+	ts := httptest.NewTLSServer(nil)
+	cfg := &tls.Config{Certificates: ts.TLS.Certificates, NextProtos: []string{"http/1.1"}}
+	ts.Close()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: Filter(nil, http.StatusForbidden, "", nil, nil, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "local")
+	})), ConnContext: ConnContext}
+	passthrough := func(name string) TunnelFunc {
+		if name != "pass.example" {
+			return nil
+		}
+		return func(c net.Conn, head []byte) {
+			tc := tls.Server(&prefixConn{Conn: c, head: head}, cfg)
+			defer tc.Close()
+			http.ReadRequest(bufio.NewReader(tc))
+			io.WriteString(tc, "HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\npassed")
+		}
+	}
+	go srv.Serve(Listen(ln, cfg, 1<<16, nil, passthrough))
+	t.Cleanup(func() { srv.Close() })
+
+	for name, want := range map[string]string{"pass.example": "passed", "local.example": "local"} {
+		tr := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true, ServerName: name}}
+		resp, err := (&http.Client{Transport: tr}).Get("https://" + ln.Addr().String() + "/")
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if string(body) != want {
+			t.Errorf("%s: got %q, want %q", name, body, want)
 		}
 	}
 }

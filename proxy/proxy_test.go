@@ -4,10 +4,13 @@ package proxy
 
 import (
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestTrustedXForwardedFor(t *testing.T) {
@@ -46,9 +49,62 @@ func TestTrustedXForwardedFor(t *testing.T) {
 			r.Header.Set("X-Forwarded-For", tc.xff)
 		}
 		w := httptest.NewRecorder()
-		New(target, tr, nil).ServeHTTP(w, r)
+		New(target, tr, false, nil).ServeHTTP(w, r)
 		if got := w.Body.String(); got != tc.want {
 			t.Errorf("%v %s %q: got %q, want %q", tc.trusted, tc.remote, tc.xff, got, tc.want)
+		}
+	}
+}
+
+// Per client, upstream connections are reused by that client only, and
+// closed with it.
+func TestPerClient(t *testing.T) {
+	var opened, closed atomic.Int32
+	up := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	up.Config.ConnState = func(_ net.Conn, s http.ConnState) {
+		switch s {
+		case http.StateNew:
+			opened.Add(1)
+		case http.StateClosed:
+			closed.Add(1)
+		}
+	}
+	up.Start()
+	defer up.Close()
+	target, _ := url.Parse(up.URL)
+	for _, perClient := range []bool{false, true} {
+		opened.Store(0)
+		closed.Store(0)
+		px := New(target, nil, perClient, nil)
+		front := httptest.NewUnstartedServer(px)
+		front.Config.ConnContext = px.ConnContext
+		front.Config.ConnState = px.ConnState
+		front.Start()
+		for client := 0; client < 2; client++ {
+			tr := &http.Transport{}
+			for i := 0; i < 3; i++ {
+				resp, err := (&http.Client{Transport: tr}).Get(front.URL)
+				if err != nil {
+					t.Fatal(err)
+				}
+				io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+			}
+			tr.CloseIdleConnections()
+		}
+		front.Close()
+		want := map[bool]int32{false: 1, true: 2}[perClient]
+		if n := opened.Load(); n != want {
+			t.Errorf("perClient=%v: %d upstream connections, want %d", perClient, n, want)
+		}
+		if perClient {
+			deadline := time.Now().Add(time.Second)
+			for closed.Load() < 2 && time.Now().Before(deadline) {
+				time.Sleep(10 * time.Millisecond)
+			}
+			if n := closed.Load(); n != 2 {
+				t.Errorf("%d upstream connections closed with their clients, want 2", n)
+			}
 		}
 	}
 }

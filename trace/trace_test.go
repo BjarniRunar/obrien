@@ -155,7 +155,7 @@ func TestThroughFilter(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv := &http.Server{Handler: h, ConnContext: rules.ConnContext}
-	go srv.Serve(rules.Listen(ln, nil, 1<<16))
+	go srv.Serve(rules.Listen(ln, nil, 1<<16, nil, nil))
 	defer srv.Close()
 
 	c, err := net.Dial("tcp", ln.Addr().String())

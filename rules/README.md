@@ -16,7 +16,12 @@ Forwarding is in [`../proxy`](../proxy/README.md).
   where a request starts. Requires `ConnContext` on the `http.Server`.
   HTTP/2 isn't captured; its header is rebuilt from the request. Capture
   stops after `Upgrade` or `CONNECT`, so a refused upgrade gets later
-  requests on that connection rejected.
+  requests on that connection rejected. Given a `TunnelFunc`, it also reads
+  each HTTP/1.x connection's first line before the server sees it, and
+  hands connections `IsTunnel` matches (`CONNECT`, `PING`, PageKite
+  WebSocket paths) to it, bypassing all rules. Given a `PassthroughFunc`,
+  TLS connections are offered to it by SNI before the handshake (the
+  ClientHello is read and replayed), to be passed on still encrypted.
 - `header.go`: `Header` (raw bytes, request line, fields in wire order,
   parse error); `HeaderSlot` (`WithHeaderSlot`), handing the judged header
   and whether Filter blocked the request, and if for being malformed, to
@@ -47,8 +52,9 @@ Forwarding is in [`../proxy`](../proxy/README.md).
   inspection or audit log.
 - `crs_test.go`: CRS tests (query and body attacks, clean requests, body
   passed intact, detect mode, error types).
-- `rules_test.go`: parser, patterns, block page, and capture over real
-  connections (pipelining, chunked, TLS with HTTP/1.1 and HTTP/2).
+- `rules_test.go`: parser, patterns, block page, capture over real
+  connections (pipelining, chunked, TLS with HTTP/1.1 and HTTP/2), and
+  tunnel diversion and TLS passthrough.
 
 The daemon runs `Sanity`, its `Patterns` (`rules-list`, `rules-add`,
 `rules-rm`), then `CRS` if `--crs` is on. Metrics: `rules_rejected_total`,
