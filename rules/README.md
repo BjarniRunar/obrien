@@ -9,7 +9,7 @@ Forwarding is in [`../proxy`](../proxy/README.md).
   short HTML page linking to the `Rejection`'s URL or Filter's default.
   The reason goes to a `RejectFunc` (logged and counted), never to the
   client. A `TimeFunc` gets each request's time in the rules.
-- `capture.go`: `Listen` wraps a listener to capture each HTTP/1.x
+- `capture.go`: `Listen` (configured by `Options`) wraps a listener to capture each HTTP/1.x
   request's raw header, and terminates TLS if given a config. It follows
   the framing (Content-Length, chunked) itself; `Filter` checks each
   capture against net/http's request, so the two parsers can't disagree on
@@ -19,9 +19,11 @@ Forwarding is in [`../proxy`](../proxy/README.md).
   requests on that connection rejected. Given a `TunnelFunc`, it also reads
   each HTTP/1.x connection's first line before the server sees it, and
   hands connections `IsTunnel` matches (`CONNECT`, `PING`, PageKite
-  WebSocket paths) to it, bypassing all rules. Given a `PassthroughFunc`,
+  WebSocket paths, `/ping` to `ping.pagekite`) to it, bypassing all rules. Given a `PassthroughFunc`,
   TLS connections are offered to it by SNI before the handshake (the
   ClientHello is read and replayed), to be passed on still encrypted.
+  Given `Plain`, a TLS listener hands it connections that aren't TLS. A
+  `DebugFunc` logs how each connection is dispatched or why it was dropped.
 - `header.go`: `Header` (raw bytes, request line, fields in wire order,
   parse error); `HeaderSlot` (`WithHeaderSlot`), handing the judged header
   and whether Filter blocked the request, and if for being malformed, to

@@ -16,7 +16,8 @@ Moves traffic to the upstream; never decides whether it may pass (that is
   unmodified: replays the bytes already read, then copies both ways. TLS
   to an https upstream uses the client's SNI. Used for connections
   `rules.Listen` diverts (PageKite, CONNECT). `RawTunnel` does the same
-  without TLS to the upstream, for TLS passed on still encrypted.
+  without TLS to the upstream, for TLS passed on still encrypted and
+  plaintext tunnels arriving on the TLS port.
 - `proxy_test.go`: trusted `X-Forwarded-For` and per-client pool tests.
 - `tunnel_test.go`: tunnel test.
 - `bufpool.go`: pooled 32 KB copy buffers.

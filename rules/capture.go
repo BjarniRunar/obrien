@@ -252,44 +252,86 @@ func takeHeader(r *http.Request) (*Header, *tls.ConnectionState) {
 // head is what was read from c so far.
 type TunnelFunc func(c net.Conn, head []byte)
 
+// DebugFunc logs a message with slog-style key/value pairs.
+type DebugFunc func(msg string, args ...any)
+
 // PassthroughFunc decides from a TLS ClientHello's server name whether to
 // pass the connection on still encrypted: it returns the tunnel to use, or
 // nil to terminate TLS here.
 type PassthroughFunc func(serverName string) TunnelFunc
 
-// maxSniff bounds the bytes read looking for a connection's first line.
+// maxSniff bounds the bytes read looking for a connection's first line, or
+// a ping probe's header.
 const maxSniff = 1024
 
-// IsTunnel is a crude test, on a connection's first line, for PageKite
-// tunnel handshakes and relay probes, and proxy CONNECTs.
-func IsTunnel(line []byte) bool {
+// recordTypeHandshake is the first byte of a TLS ClientHello.
+const recordTypeHandshake = 0x16
+
+// IsTunnel is a crude test, on the start of a connection, for PageKite
+// tunnel handshakes and relay probes, and proxy CONNECTs. A probe for /ping
+// is only a tunnel with Host ping.pagekite, so head must hold its whole
+// header (see sniff).
+func IsTunnel(head []byte) bool {
 	for _, p := range []string{"CONNECT ", "PING ", "GET /~:PageKite:~/", "GET /Beanstalk~Magic~Beans/"} {
-		if bytes.HasPrefix(line, []byte(p)) {
+		if bytes.HasPrefix(head, []byte(p)) {
 			return true
+		}
+	}
+	if !isPing(head) {
+		return false
+	}
+	for _, line := range bytes.Split(head, []byte("\n"))[1:] {
+		name, value, ok := bytes.Cut(bytes.TrimRight(line, "\r"), []byte(":"))
+		if ok && bytes.EqualFold(name, []byte("Host")) {
+			return bytes.EqualFold(bytes.TrimSpace(value), []byte("ping.pagekite"))
 		}
 	}
 	return false
 }
 
+func isPing(head []byte) bool {
+	return bytes.HasPrefix(head, []byte("HEAD /ping ")) || bytes.HasPrefix(head, []byte("GET /ping "))
+}
+
+// Options configures Listen. All fields but MaxHeaderBytes are optional.
+type Options struct {
+	// TLS, if set, makes Listen terminate TLS.
+	TLS *tls.Config
+	// MaxHeaderBytes should be the server's MaxHeaderBytes.
+	MaxHeaderBytes int
+	// Tunnel receives HTTP/1.x connections IsTunnel matches.
+	Tunnel TunnelFunc
+	// Passthrough is offered TLS connections by SNI, before the handshake.
+	Passthrough PassthroughFunc
+	// Plain receives connections to a TLS listener that are not TLS, with
+	// what was read replayed; without it they are dropped.
+	Plain func(net.Conn)
+	// Debug is told how each connection is dispatched or why it was dropped.
+	Debug DebugFunc
+}
+
 // Listen wraps ln so every HTTP/1.x connection it accepts is captured.
-// maxHeaderBytes should be the server's MaxHeaderBytes.
 //
-// With tlsConfig, it also terminates TLS. net/http only treats a connection
+// With TLS, it also terminates TLS. net/http only treats a connection
 // as TLS (setting Request.TLS and serving HTTP/2) when it is a bare
 // *tls.Conn, so handshakes are done here, concurrently, and connections that
 // negotiate HTTP/2 are handed over unwrapped; Filter restores Request.TLS for
 // the captured ones.
 //
-// With tunnel, each HTTP/1.x connection's first line is read here too, and
-// connections IsTunnel matches go to tunnel instead of the server, so no
+// With Tunnel, each HTTP/1.x connection's start is read here too, and
+// connections IsTunnel matches go to Tunnel instead of the server, so no
 // rule ever sees them. Some PageKite handshakes lack the Host header
 // net/http requires, so this cannot wait for the server.
 //
-// With passthrough, TLS connections are first offered to it by SNI, before
-// any handshake.
-func Listen(ln net.Listener, tlsConfig *tls.Config, maxHeaderBytes int, tunnel TunnelFunc, passthrough PassthroughFunc) net.Listener {
-	l := &listener{Listener: ln, tlsConfig: tlsConfig, tunnel: tunnel, passthrough: passthrough, maxBytes: maxHeaderBytes + 4096}
-	if tlsConfig != nil || tunnel != nil {
+// With Passthrough or Plain, a TLS listener reads each ClientHello before
+// any handshake, to route connections by SNI, or to Plain if not TLS.
+func Listen(ln net.Listener, o Options) net.Listener {
+	debug := o.Debug
+	if debug == nil {
+		debug = func(string, ...any) {}
+	}
+	l := &listener{Listener: ln, tlsConfig: o.TLS, tunnel: o.Tunnel, passthrough: o.Passthrough, plain: o.Plain, debug: debug, maxBytes: o.MaxHeaderBytes + 4096}
+	if o.TLS != nil || o.Tunnel != nil {
 		l.conns = make(chan net.Conn)
 		l.errs = make(chan error, 1)
 		l.done = make(chan struct{})
@@ -303,6 +345,8 @@ type listener struct {
 	tlsConfig   *tls.Config
 	tunnel      TunnelFunc
 	passthrough PassthroughFunc
+	plain       func(net.Conn)
+	debug       DebugFunc
 	maxBytes    int
 
 	conns     chan net.Conn
@@ -355,17 +399,29 @@ func (l *listener) acceptLoop() {
 // slow client cannot hold up others.
 func (l *listener) prepare(raw net.Conn) {
 	c := raw
+	remote := raw.RemoteAddr().String()
+	l.debug("connection accepted", "local", raw.LocalAddr().String(), "remote", remote)
 	var state *tls.ConnectionState
-	if l.tlsConfig != nil && l.passthrough != nil {
+	if l.tlsConfig != nil && (l.passthrough != nil || l.plain != nil) {
 		name, head, ok := peekServerName(raw)
+		if !ok && l.plain != nil && len(head) > 0 && head[0] != recordTypeHandshake {
+			l.debug("not TLS, handled as plaintext", "remote", remote, "head", printable(head))
+			l.plain(&prefixConn{Conn: raw, head: head})
+			return
+		}
 		if !ok {
+			l.debug("no TLS ClientHello, dropped", "remote", remote, "bytes", len(head), "head", printable(head))
 			raw.Close()
 			return
 		}
-		if t := l.passthrough(name); t != nil {
-			t(raw, head)
-			return
+		if l.passthrough != nil {
+			if t := l.passthrough(name); t != nil {
+				l.debug("TLS passthrough", "remote", remote, "sni", name)
+				t(raw, head)
+				return
+			}
 		}
+		l.debug("TLS terminating", "remote", remote, "sni", name)
 		c = &prefixConn{Conn: raw, head: head}
 	}
 	if l.tlsConfig != nil {
@@ -374,10 +430,12 @@ func (l *listener) prepare(raw net.Conn) {
 		err := tc.HandshakeContext(ctx)
 		cancel()
 		if err != nil {
+			l.debug("TLS handshake failed", "remote", remote, "err", err)
 			tc.Close()
 			return
 		}
 		st := tc.ConnectionState()
+		l.debug("TLS handshake done", "remote", remote, "version", tls.VersionName(st.Version), "alpn", st.NegotiatedProtocol)
 		if st.NegotiatedProtocol == "h2" {
 			l.hand(tc)
 			return
@@ -385,11 +443,13 @@ func (l *listener) prepare(raw net.Conn) {
 		c, state = tc, &st
 	}
 	if l.tunnel != nil {
-		head, err := firstLine(c)
+		head, err := sniff(c)
 		if len(head) == 0 && err != nil {
+			l.debug("no request line, dropped", "remote", remote, "err", err)
 			c.Close()
 			return
 		}
+		l.debug("connection start", "remote", remote, "head", printable(head), "tunnel", IsTunnel(head))
 		if IsTunnel(head) {
 			l.tunnel(c, head)
 			return
@@ -407,13 +467,14 @@ func (l *listener) hand(c net.Conn) {
 	}
 }
 
-// firstLine reads until the first LF, maxSniff bytes, an error or
-// handshakeTimeout, whichever comes first, and returns all bytes read.
-func firstLine(c net.Conn) ([]byte, error) {
+// sniff reads until the first LF (or, for a ping probe, the end of the
+// header), maxSniff bytes, an error or handshakeTimeout, whichever comes
+// first, and returns all bytes read.
+func sniff(c net.Conn) ([]byte, error) {
 	c.SetReadDeadline(time.Now().Add(handshakeTimeout))
 	defer c.SetReadDeadline(time.Time{})
 	buf := make([]byte, 0, maxSniff)
-	for len(buf) < maxSniff && bytes.IndexByte(buf, '\n') < 0 {
+	for len(buf) < maxSniff && !sniffed(buf) {
 		n, err := c.Read(buf[len(buf):maxSniff])
 		buf = buf[:len(buf)+n]
 		if err != nil {
@@ -421,6 +482,13 @@ func firstLine(c net.Conn) ([]byte, error) {
 		}
 	}
 	return buf, nil
+}
+
+func sniffed(buf []byte) bool {
+	if bytes.IndexByte(buf, '\n') < 0 {
+		return false
+	}
+	return !isPing(buf) || bytes.Contains(buf, []byte("\r\n\r\n")) || bytes.Contains(buf, []byte("\n\n"))
 }
 
 // errHelloRead stops a handshake once the ClientHello is read.
@@ -455,6 +523,14 @@ func (c *helloConn) Read(p []byte) (int, error) {
 }
 
 func (c *helloConn) Write(p []byte) (int, error) { return len(p), nil }
+
+// printable returns up to 80 bytes of b, quoted, for logging.
+func printable(b []byte) string {
+	if len(b) > 80 {
+		b = b[:80]
+	}
+	return strconv.Quote(string(b))
+}
 
 // prefixConn returns head before reading from Conn.
 type prefixConn struct {

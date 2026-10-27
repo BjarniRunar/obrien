@@ -247,6 +247,14 @@ Connections without SNI are passed through too: old PageKite clients may
 lack SNI, and the relay may support older TLS than obrien. The ClientHello
 is read by aborting a handshake and replayed.
 
+Relays take plaintext and TLS on one port, so with `--allow-pagekite` the
+TLS listener does too, telling them apart by the first byte. Plaintext is
+handed to a second cleartext pipeline (`https-plain`, upstream
+`--upstream`) whose tunnels go unencrypted to `--upstream-https`'s
+address, where the relay listens. The relay's `/ping` probe is a tunnel
+only with `Host: ping.pagekite`, so a site's own `/ping` is still
+inspected.
+
 The relay routes each connection by its first request, so upstream
 connections belong to one client connection: reused for its requests,
 never another client's (#2), closed when it closes. HTTP/2 is off on both
@@ -268,3 +276,12 @@ Every file in a directory is tried; ones without `-----BEGIN ` or over
 1 MiB are silently skipped, other failures logged. Expired certificates
 are not loaded, and are dropped from the index once they expire. Startup fails if the
 pair fails or nothing loads. `certs-list` shows what is loaded (#3).
+
+## 17. Logs go to stderr unless a file is named
+
+`--log-level`, `--log-target`, `--log-file` configure kettlingar's logging
+in `ServiceStartup`. `auto` means stderr, or the file if `--log-file` is set.
+
+**Why:** kettlingar's own `auto` picks a default file; obrien's logs should
+be where the operator started it unless asked otherwise. Connection-level
+debugging (dispatch, TLS handshakes) is at `debug`.

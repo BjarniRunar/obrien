@@ -68,6 +68,9 @@ daemon up lists every command.
 | `--allow-pagekite` | `false`                | Front a PageKite relay (see below)          |
 | `--request-log`    | `1000`                 | Requests log lines kept in memory; `0`=off  |
 | `--trace-log`      | `off`                  | Path to the trace log file (auto-rotates)   |
+| `--log-level`      | `info`                 | `debug`, `info`, `warn` or `error`          |
+| `--log-target`     | `auto`                 | `stderr`, `file`, `syslog`; `auto`: stderr/file |
+| `--log-file`       | `off`                  | Absolute path of the log file               |
 | `--crs`            | `off`                  | OWASP CRS: `block`, `detect` or `off`       |
 | `--crs-paranoia`   | `1`                    | CRS paranoia level, 1-4                     |
 | `--crs-conf`       | `off`                  | Absolute path of extra CRS directives       |
@@ -174,9 +177,13 @@ obrien certs-list    # files, names, expiry, default, load errors
 
 `obrien start --allow-pagekite true`:
 
-- passes connections opening with `CONNECT`, `PING` or a PageKite
-  WebSocket tunnel request straight to the upstream, unmodified and
-  bypassing all rules (`proxy_tunnels_total`);
+- passes connections opening with `CONNECT`, `PING`, a PageKite
+  WebSocket tunnel request or a `/ping` probe to `Host: ping.pagekite`
+  straight to the upstream, unmodified and bypassing all rules
+  (`proxy_tunnels_total`);
+- accepts plaintext on the TLS port, as relays do: tunnels go to
+  `--upstream-https`'s address unencrypted, other requests are served as
+  on the cleartext port, to `--upstream` (listener `https-plain`);
 - passes TLS for names no certificate covers, or without SNI, to
   `--upstream-https`'s address still encrypted, uninspected
   (`proxy_tls_passthrough_total`);

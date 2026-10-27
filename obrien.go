@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mailpile/kettlingar-go/kettlingar"
@@ -57,6 +59,10 @@ type Obrien struct {
 	RequestLog int    `default:"1000" help:"Recent requests kept in memory, or 0"`
 	TraceLog   string `default:"off"  help:"Absolute path of a file to append a line per request to, with its trace, or off; rotated every 20 MB"`
 
+	LogLevel  string `default:"info" help:"Log level: debug, info, warn or error"`
+	LogTarget string `default:"auto" help:"Log destination: stderr, file, syslog or auto (file if --log-file is set, else stderr)"`
+	LogFile   string `default:"off"  help:"Absolute path of the log file, or off"`
+
 	ks            *kettlingar.KettlingarService
 	servers       []*http.Server
 	upstream      *url.URL
@@ -77,6 +83,9 @@ type Obrien struct {
 // fail instead of leaving a half-working daemon behind.
 func (p *Obrien) ServiceStartup(ks *kettlingar.KettlingarService) error {
 	p.ks = ks
+	if err := p.configureLogging(); err != nil {
+		return err
+	}
 
 	target, err := parseUpstream(p.Upstream)
 	if err != nil {
@@ -163,7 +172,9 @@ func (p *Obrien) ServiceStartup(ks *kettlingar.KettlingarService) error {
 		p.httpLn = ln
 		px := proxy.New(target, p.trusted, p.AllowPagekite, p.upstreamError)
 		srv := proxy.NewServer(monitor.Middleware("http", p.hooks, p.annotator(), p.hooksTimed, p.pipeline(px)))
-		p.serve("http", srv, ln, nil, target, px)
+		p.serve("http", srv, p.counted("http", ln), px, rules.Options{
+			Tunnel: p.tunnel("http", proxy.Tunnel(target, p.tunnelError)),
+		})
 	}
 	if https != off {
 		pairCert, pairKey, keyPaths := p.Cert, p.Key, []string(nil)
@@ -197,7 +208,25 @@ func (p *Obrien) ServiceStartup(ks *kettlingar.KettlingarService) error {
 		if p.AllowPagekite {
 			srv.TLSConfig.NextProtos = []string{"http/1.1"}
 		}
-		p.serve("https", srv, ln, srv.TLSConfig, targetHttps, px)
+		// PageKite relays take TLS and plaintext on one port, telling them
+		// apart by the first bytes; plaintext is served like the cleartext
+		// listener, but tunnels go to the relay at --upstream-https's address.
+		var plain func(net.Conn)
+		if p.AllowPagekite {
+			q := newConnQueue(ln.Addr())
+			pxPlain := proxy.New(target, p.trusted, p.AllowPagekite, p.upstreamError)
+			srvPlain := proxy.NewServer(monitor.Middleware("https-plain", p.hooks, p.annotator(), p.hooksTimed, p.pipeline(pxPlain)))
+			p.serve("https-plain", srvPlain, q, pxPlain, rules.Options{
+				Tunnel: p.tunnel("https-plain", proxy.RawTunnel(targetHttps, p.tunnelError)),
+			})
+			plain = q.put
+		}
+		p.serve("https", srv, p.counted("https", ln), px, rules.Options{
+			TLS:         srv.TLSConfig,
+			Tunnel:      p.tunnel("https", proxy.Tunnel(targetHttps, p.tunnelError)),
+			Passthrough: p.passthrough("https", srv.TLSConfig, targetHttps),
+			Plain:       plain,
+		})
 	}
 	return nil
 }
@@ -263,14 +292,19 @@ func parseUpstream(raw string) (*url.URL, error) {
 	return u, nil
 }
 
-// serve counts connections as they are accepted, before any TLS handshake or
-// request, so traffic that reaches obrien shows up in metrics even when no
-// request completes.
-func (p *Obrien) serve(listener string, srv *http.Server, ln net.Listener, tlsConfig *tls.Config, target *url.URL, px *proxy.Proxy) {
+// counted counts connections as they are accepted, before any TLS handshake
+// or request, so traffic that reaches obrien shows up in metrics even when
+// no request completes.
+func (p *Obrien) counted(listener string, ln net.Listener) net.Listener {
 	labels := kettlingar.MetricLabels{"listener": listener}
-	counted := countingListener{ln, func() {
+	return countingListener{ln, func() {
 		p.ks.MetricsCount("proxy_connections_total", 1, kettlingar.PublicMetric, labels)
 	}}
+}
+
+func (p *Obrien) serve(listener string, srv *http.Server, ln net.Listener, px *proxy.Proxy, o rules.Options) {
+	o.MaxHeaderBytes = srv.MaxHeaderBytes
+	o.Debug = p.ks.Logger.With("listener", listener).Debug
 	srv.ConnContext = func(ctx context.Context, c net.Conn) context.Context {
 		return px.ConnContext(rules.ConnContext(ctx, c), c)
 	}
@@ -278,7 +312,7 @@ func (p *Obrien) serve(listener string, srv *http.Server, ln net.Listener, tlsCo
 	p.servers = append(p.servers, srv)
 	p.ks.Logger.Info(serviceName+": proxying", "listener", listener, "listen", ln.Addr().String())
 	go func() {
-		if err := srv.Serve(rules.Listen(counted, tlsConfig, srv.MaxHeaderBytes, p.tunnel(listener, target), p.passthrough(listener, tlsConfig, target))); !errors.Is(err, http.ErrServerClosed) {
+		if err := srv.Serve(rules.Listen(ln, o)); !errors.Is(err, http.ErrServerClosed) {
 			p.ks.Logger.Error(serviceName+": proxy server error", "err", err)
 		}
 	}()
@@ -381,21 +415,22 @@ func (p *Obrien) upstreamError(r *http.Request, err error) {
 // tunnel returns the listener's PageKite/CONNECT tunnel, or nil when
 // --allow-pagekite is off. Tunnels bypass net/http, so they are only counted
 // and logged, never recorded as requests.
-func (p *Obrien) tunnel(listener string, target *url.URL) rules.TunnelFunc {
+func (p *Obrien) tunnel(listener string, t func(net.Conn, []byte)) rules.TunnelFunc {
 	if !p.AllowPagekite {
 		return nil
 	}
 	labels := kettlingar.MetricLabels{"listener": listener}
-	t := proxy.Tunnel(target, func(c net.Conn, err error) {
-		p.ks.Logger.Warn(serviceName+": tunnel upstream error", "remote", c.RemoteAddr().String(), "err", err)
-		p.ks.MetricsCount("proxy_upstream_errors_total", 1, kettlingar.PublicMetric, nil)
-	})
 	return func(c net.Conn, head []byte) {
 		line, _, _ := bytes.Cut(head, []byte("\n"))
 		p.ks.Logger.Info(serviceName+": tunnel", "listener", listener, "remote", c.RemoteAddr().String(), "request", strings.TrimSpace(string(line)))
 		p.ks.MetricsCount("proxy_tunnels_total", 1, kettlingar.PublicMetric, labels)
 		t(c, head)
 	}
+}
+
+func (p *Obrien) tunnelError(c net.Conn, err error) {
+	p.ks.Logger.Warn(serviceName+": tunnel upstream error", "remote", c.RemoteAddr().String(), "err", err)
+	p.ks.MetricsCount("proxy_upstream_errors_total", 1, kettlingar.PublicMetric, nil)
 }
 
 // passthrough returns the TLS listener's check for connections to pass to
@@ -447,6 +482,42 @@ func (l countingListener) Accept() (net.Conn, error) {
 	return c, err
 }
 
+// connQueue is a listener fed connections by another listener's put.
+type connQueue struct {
+	addr  net.Addr
+	conns chan net.Conn
+	done  chan struct{}
+	once  sync.Once
+}
+
+func newConnQueue(addr net.Addr) *connQueue {
+	return &connQueue{addr: addr, conns: make(chan net.Conn), done: make(chan struct{})}
+}
+
+func (q *connQueue) put(c net.Conn) {
+	select {
+	case q.conns <- c:
+	case <-q.done:
+		c.Close()
+	}
+}
+
+func (q *connQueue) Accept() (net.Conn, error) {
+	select {
+	case c := <-q.conns:
+		return c, nil
+	case <-q.done:
+		return nil, net.ErrClosed
+	}
+}
+
+func (q *connQueue) Close() error {
+	q.once.Do(func() { close(q.done) })
+	return nil
+}
+
+func (q *connQueue) Addr() net.Addr { return q.addr }
+
 func (p *Obrien) patternMatched(_ *http.Request, name string) {
 	p.ks.MetricsCount("rules_matched_total", 1, kettlingar.PublicMetric, kettlingar.MetricLabels{"rule": name})
 }
@@ -469,4 +540,36 @@ func (p *Obrien) hooksTimed(listener string, d time.Duration) {
 	labels := kettlingar.MetricLabels{"listener": listener}
 	p.ks.MetricsCount("monitor_hooks_total", 1, kettlingar.PublicMetric, labels)
 	p.ks.MetricsSample("monitor_hook_time_us", uint64(d.Microseconds()), kettlingar.PublicMetric, labels)
+}
+
+// configureLogging applies --log-*. Kettlingar's own "auto" target would pick
+// a default file; obrien wants stderr unless a file is named.
+func (p *Obrien) configureLogging() error {
+	var level slog.Level
+	if err := level.UnmarshalText([]byte(p.LogLevel)); err != nil {
+		return fmt.Errorf("--log-level %q: %w", p.LogLevel, err)
+	}
+	s := kettlingar.LogSettings{Level: level, Target: p.LogTarget}
+	if p.LogFile != off {
+		if !filepath.IsAbs(p.LogFile) {
+			return fmt.Errorf("--log-file %q must be an absolute path", p.LogFile)
+		}
+		s.File.Path = p.LogFile
+	}
+	switch p.LogTarget {
+	case "auto":
+		s.Target = "stderr"
+		if p.LogFile != off {
+			s.Target = "file"
+		}
+	case "stderr", "syslog":
+	case "file":
+		if p.LogFile == off {
+			return errors.New("--log-target file needs --log-file")
+		}
+	default:
+		return fmt.Errorf("--log-target %q: want stderr, file, syslog or auto", p.LogTarget)
+	}
+	p.ks.ConfigureLogging(s)
+	return nil
 }
